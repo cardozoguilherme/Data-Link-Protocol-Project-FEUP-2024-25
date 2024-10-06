@@ -2,6 +2,20 @@
 //
 // Modified by: Eduardo Nuno Almeida [enalmeida@fe.up.pt]
 
+// TO RUN LAB 1 IN WSL:
+// STEP 1: sudo apt install socat
+
+// STEP 2: socat -d -d pty,raw,echo=0 pty,raw,echo=0
+
+// STEP 3: Run these commands in the same terminal
+//         stty -F /dev/pts/1 9600 cs8 -cstopb -parenb
+//         stty -F /dev/pts/2 9600 cs8 -cstopb -parenb
+
+// STEP 4: Open two new terminals and run each line in each terminal
+//         ./read_noncanonical_modified /dev/pts/2
+//         ./write_noncanonical_modified /dev/pts/1
+
+
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -29,10 +43,19 @@
 // C (Control)
 #define C_SET 0x03 // SET: 00000011 (0x03)
 #define C_UA 0x07 // UA: 00000111 (0x07)
-////////////////////////////////
-////////////////////////////////
 
-volatile int STOP = FALSE;
+// Define state machine states
+typedef enum {
+    START,
+    FLAG_RCV,
+    A_RCV,
+    C_RCV,
+    BCC_OK,
+    STOP
+} State;
+
+volatile int stop_flag = FALSE;
+
 
 int main(int argc, char *argv[]) {
     // Program usage: Uses either COM1 or COM2
@@ -73,11 +96,8 @@ int main(int argc, char *argv[]) {
 
     // Set input mode (non-canonical, no echo,...)
     newtio.c_lflag = 0;
-    newtio.c_cc[VTIME] = 0; // Inter-character timer unused
-    newtio.c_cc[VMIN] = 5;  // Blocking read until 5 chars received
-
-    // VTIME e VMIN should be changed in order to protect with a
-    // timeout the reception of the following character(s)
+    newtio.c_cc[VTIME] = 1; // Inter-character timer unused
+    newtio.c_cc[VMIN] = 1;  // Blocking read until 1 chars received
 
     // Now clean the line and activate the settings for the port
     // tcflush() discards data written to the object referred to
@@ -94,49 +114,93 @@ int main(int argc, char *argv[]) {
 
     printf("New termios structure set\n");
 
-    ////////////////////////////////
-    ////////////////////////////////
-    while (STOP == FALSE) {
-        // Read the transmitter SET frame
-        unsigned char received_set_frame[BUF_SIZE];
-        int bytes = read(fd, received_set_frame, BUF_SIZE);
+    State currentState = START;
+    unsigned char byte;
+    unsigned char address = 0;
+    unsigned char control = 0;
+    unsigned char bcc = 0;
 
-        // Check if the frame is a valid SET
-        if (bytes == BUF_SIZE && received_set_frame[0] == FLAG && 
-            received_set_frame[1] == A_SENDER && received_set_frame[2] == C_SET &&
-            received_set_frame[3] == (received_set_frame[1] ^ received_set_frame[2]) &&
-            received_set_frame[4] == FLAG)
-        {
-            printf("SET frame received successfully!\n");
-            printf("Received SET frame:\n");
-            for (int i = 0; i < BUF_SIZE; i++)
-            {
-                printf("0x%02X ", received_set_frame[i]);
+    while (stop_flag == FALSE) {
+        // Read one byte at a time from the serial port
+        int bytes = read(fd, &byte, 1);
+
+        if (bytes > 0) { // Proceed only if a byte was read
+            switch (currentState) {
+                case START:
+                    if (byte == FLAG) {
+                        currentState = FLAG_RCV;
+                    }
+                    printf("byte: 0x%02X next state: %d \n", byte, currentState);
+                    break;
+
+                case FLAG_RCV:
+                    // Expecting the address byte
+                    if (byte == A_SENDER) {
+                        address = byte;
+                        currentState = A_RCV;
+                    } else if (byte != FLAG) { // If not FLAG, reset to START (Other_RCV)
+                        currentState = START;
+                    }
+                    printf("byte: 0x%02X next state: %d \n", byte, currentState);
+                    break;
+
+                case A_RCV:
+                    // Expecting the control byte
+                    if (byte == C_SET) {
+                        control = byte;
+                        currentState = C_RCV;
+                    } else if (byte == FLAG) {
+                        currentState = FLAG_RCV; // If FLAG, go back to FLAG_RCV
+                    } else { // Any other byte resets to START (Other_RCV)
+                        currentState = START;
+                    }
+                    printf("byte: 0x%02X next state: %d \n", byte, currentState);
+                    break;
+
+                case C_RCV:
+                    // Expecting BCC (A ^ C)
+                    bcc = address ^ control;
+                    if (byte == bcc) {
+                        currentState = BCC_OK;
+                    } else if (byte == FLAG) {
+                        currentState = FLAG_RCV; // If FLAG, go back to FLAG_RCV
+                    } else { // If BCC doesn't match or any other byte, reset to START
+                        currentState = START;
+                    }
+                    printf("byte: 0x%02X next state: %d \n", byte, currentState);
+                    break;
+
+                case BCC_OK:
+                    // Expecting end flag
+                    if (byte == FLAG) {
+                        currentState = STOP; // Full frame received successfully
+                        stop_flag = TRUE; // End the loop
+                    } else { // If not FLAG, reset to START
+                        currentState = START;
+                    }
+                    printf("byte: 0x%02X next state: %d \n", byte, currentState);
+                    break;
+
+                default:
+                    currentState = START;
+                    break;
             }
-            printf("\n");
-
-            // Set up and send the UA frame
-            unsigned char ua_frame[BUF_SIZE];
-            ua_frame[0] = FLAG;               // FLAG
-            ua_frame[1] = A_RECEIVER;          // A (Address)
-            ua_frame[2] = C_UA;                // C (UA)
-            ua_frame[3] = ua_frame[1] ^ ua_frame[2]; // BCC1 (A ^ C)
-            ua_frame[4] = FLAG;               // FLAG
-
-            // Send the UA frame back to the transmitter
-            write(fd, ua_frame, BUF_SIZE);
-            printf("UA frame sent.\n");
-
-            // Stop the loop after sending UA
-            STOP = TRUE;
-        }
-        else
-        {
-            printf("Invalid frame received or not enough bytes (expected 5, received %d).\n", bytes);
         }
     }
-    ////////////////////////////////
-    ////////////////////////////////
+
+    // If STOP is reached, the frame was successfully received
+    printf("SET frame received successfully!\n");
+
+    // Set up and send the UA frame
+    unsigned char ua_frame[BUF_SIZE] = { 
+        FLAG, 
+        A_RECEIVER, 
+        C_UA,
+        (A_RECEIVER ^ C_UA),
+        FLAG
+    };
+    write(fd, ua_frame, BUF_SIZE);
+    printf("UA frame sent.\n");
 
     // Restore the old port settings
     if (tcsetattr(fd, TCSANOW, &oldtio) == -1) {
