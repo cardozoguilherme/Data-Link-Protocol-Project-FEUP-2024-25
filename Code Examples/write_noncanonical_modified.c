@@ -58,6 +58,7 @@ int main(int argc, char *argv[]) {
     
     if (fd < 0) {
         perror(serialPortName);
+        
         exit(-1);
     }
 

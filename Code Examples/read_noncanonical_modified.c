@@ -8,12 +8,12 @@
 // STEP 2: socat -d -d pty,raw,echo=0 pty,raw,echo=0
 
 // STEP 3: Run these commands in the same terminal
-//         stty -F /dev/pts/1 9600 cs8 -cstopb -parenb
-//         stty -F /dev/pts/2 9600 cs8 -cstopb -parenb
+//         stty -F /dev/pts/3 9600 cs8 -cstopb -parenb
+//         stty -F /dev/pts/4 9600 cs8 -cstopb -parenb
 
 // STEP 4: Open two new terminals and run each line in each terminal
-//         ./read_noncanonical_modified /dev/pts/2
-//         ./write_noncanonical_modified /dev/pts/1
+//         ./read_noncanonical_modified /dev/pts/4
+//         ./write_noncanonical_modified /dev/pts/3
 
 
 #include <fcntl.h>
@@ -123,7 +123,7 @@ int main(int argc, char *argv[]) {
     while (stop_flag == FALSE) {
         // Read one byte at a time from the serial port
         int bytes = read(fd, &byte, 1);
-
+        printf("byte: 0x%02X next state: %d \n", byte, currentState);
         if (bytes > 0) { // Proceed only if a byte was read
             switch (currentState) {
                 case START:

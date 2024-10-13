@@ -11,6 +11,7 @@
 #define TIMEOUT 4
 
 
+
 // Arguments:
 //   $1: /dev/ttySxx
 //   $2: baud rate

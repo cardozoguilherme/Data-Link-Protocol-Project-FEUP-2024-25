@@ -1,0 +1,8 @@
+{
+    "files.associations": {
+        "*.py": "python",
+        "link_layer.h": "c",
+        "application_layer.h": "c",
+        "*.idl": "c"
+    }
+}

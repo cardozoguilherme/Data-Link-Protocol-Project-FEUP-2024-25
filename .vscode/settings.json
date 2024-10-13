@@ -1,0 +1,8 @@
+{
+    "files.associations": {
+        "*.py": "python",
+        "stat.h": "c",
+        "string.h": "c",
+        "signal.h": "c"
+    }
+}
