@@ -42,83 +42,6 @@ void alarmHandler(int signal) {
     alarmCount++;
 }
 
-// int check_frame(int fd, LinkLayerRole role) {
-//     State currentState = START;
-//     unsigned char byte;
-//     unsigned char address = 0;
-//     unsigned char control = 0;
-//     unsigned char bcc = 0;
-
-//     while (currentState != STOP) {
-//         // Read one byte at a time from the serial port
-//         int bytes = readByteSerialPort(&byte);
-//         if (bytes > 0) { // Proceed only if a byte was read
-//             switch (currentState) {
-//                 case START:
-//                     if (byte == FLAG) {
-//                         currentState = FLAG_RCV;
-//                     }
-//                     break;
-
-//                 case FLAG_RCV:
-//                     // Expecting the address byte
-//                     if (role == LlTx && byte == A_RECEIVER) { // Expect receiver's response
-//                         address = byte;
-//                         currentState = A_RCV;
-//                     } else if (role == LlRx && byte == A_SENDER) { // Expect sender's frame
-//                         address = byte;
-//                         currentState = A_RCV;
-//                     } else if (byte != FLAG) { // If not FLAG, reset to START
-//                         currentState = START;
-//                     }
-//                     break;
-
-//                 case A_RCV:
-//                     // Expecting the control byte based on role
-//                     if (role == LlTx && (byte == C_UA)) { // Later we should implement RR/REJ
-//                         control = byte;  // Receiver replies with UA
-//                         currentState = C_RCV;
-//                     } else if (role == LlRx && byte == C_SET) { 
-//                         control = byte;  // Sender sends SET frame
-//                         currentState = C_RCV;
-//                     } else if (byte == FLAG) { // If FLAG, go back to FLAG_RCV
-//                         currentState = FLAG_RCV;
-//                     } else { // Any other byte resets to START
-//                         currentState = START;
-//                     }
-//                     break;
-
-//                 case C_RCV:
-//                     // Expecting BCC (A ^ C)
-//                     bcc = address ^ control;
-//                     if (byte == bcc) {
-//                         currentState = BCC_OK;
-//                     } else if (byte == FLAG) {
-//                         currentState = FLAG_RCV; // If FLAG, go back to FLAG_RCV
-//                     } else { // If BCC doesn't match, reset to START
-//                         currentState = START;
-//                     }
-//                     break;
-
-//                 case BCC_OK:
-//                     // Expecting end flag
-//                     if (byte == FLAG) {
-//                         currentState = STOP; // Full frame received successfully
-//                     } else { // If not FLAG, reset to START
-//                         currentState = START;
-//                     }
-//                     break;
-
-//                 default:
-//                     currentState = START;
-//                     break;
-//             }
-//         }
-//     }
-
-//     return 0; // Return 0 when a valid frame is received
-// }
-
 int check_frame(int fd, LinkLayerRole role) {
 
     State currentState = START;
@@ -131,12 +54,7 @@ int check_frame(int fd, LinkLayerRole role) {
         // Read one byte at a time from the serial port
         int bytes = readByteSerialPort(&byte);
         if (bytes > 0) { // Proceed only if a byte was read
-            // printf("byte: 0x%02X current state: %d \n", byte, currentState);
-            if (role == LlTx) {
-                printf("Role is LlTx\n");  // This will be printed because role == LlTx
-            } else if (role == LlRx) {
-                printf("Role is LlRx\n");
-            }
+            
             printf("Received byte: 0x%02X, current state: %d\n", byte, currentState);
             switch (currentState) {
                 
@@ -154,7 +72,6 @@ int check_frame(int fd, LinkLayerRole role) {
                     } else if (byte != FLAG) { // If not FLAG, reset to START (Other_RCV)
                         currentState = START;
                     }
-                    // printf("byte: 0x%02X next state: %d \n", byte, currentState);
                     break;
 
                 case A_RCV:
@@ -170,7 +87,6 @@ int check_frame(int fd, LinkLayerRole role) {
                     } else { // Any other byte resets to START (Other_RCV)
                         currentState = START;
                     }
-                    // printf("byte: 0x%02X next state: %d \n", byte, currentState);
                     break;
 
                 case C_RCV:
@@ -183,7 +99,6 @@ int check_frame(int fd, LinkLayerRole role) {
                     } else { // If BCC doesn't match or any other byte, reset to START
                         currentState = START;
                     }
-                    // printf("byte: 0x%02X next state: %d \n", byte, currentState);
                     break;
 
                 case BCC_OK:
@@ -194,7 +109,6 @@ int check_frame(int fd, LinkLayerRole role) {
                     } else { // If not FLAG, reset to START
                         currentState = START;
                     }
-                    // printf("byte: 0x%02X next state: %d \n", byte, currentState);
                     break;
 
                 default:
