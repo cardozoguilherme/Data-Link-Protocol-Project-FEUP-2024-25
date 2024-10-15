@@ -7,6 +7,8 @@
 #include <stdio.h> // for printf
 #include <stdlib.h> // for malloc, free
 
+#include <string.h> // for memcpy
+
 
 // MISC
 #define _POSIX_SOURCE 1 // POSIX compliant source
@@ -34,7 +36,6 @@ volatile int stop_flag = FALSE;
 
 int alarmEnabled = FALSE;
 volatile int alarmCount = 0;
-
 
 void alarmHandler(int signal) {
     alarmEnabled = FALSE;
@@ -169,7 +170,6 @@ int send_frame(int fd, LinkLayerRole role, const unsigned char *frame, int frame
     return -1;
 }
 
-
 ////////////////////////////////////////////////
 // LLOPEN
 ////////////////////////////////////////////////
@@ -225,8 +225,48 @@ int llopen(LinkLayer connectionParameters) {
 // LLWRITE
 ////////////////////////////////////////////////
 int llwrite(const unsigned char *buf, int bufSize) {
+    if (buf == NULL || bufSize <= 0 || bufSize > MAX_PAYLOAD_SIZE) {
+        printf("Invalid buffer or buffer size.\n");
+        return -1;
+    }
+    
 
-    return 1;
+    //
+    extern int fd;
+    //  
+
+    // Define address and control code for the data frame
+    unsigned char address = A_SENDER; // Sender's address
+    unsigned char control = 0x01; // Assuming 0x01 is the control code for data
+
+    // Calculate BCC (Address XOR Control)
+    unsigned char bcc = address ^ control;
+
+    // Frame size
+    int frameSize = 5 + bufSize; // 5 bytes for FLAG + A + C + BCC + FLAG
+    unsigned char *frame = malloc(frameSize * sizeof(unsigned char));
+    
+    if (!frame) {
+        printf("Failed to allocate memory for frame.\n");
+        return -1;
+    }
+
+    frame[0] = FLAG; // Start
+    frame[1] = address; // Sender address
+    frame[2] = control; // Control code
+    memcpy(&frame[3], buf, bufSize); // Copy data into the frame
+    frame[3 + bufSize] = bcc; // BCC
+    frame[4 + bufSize] = FLAG; // End
+
+    // Send the frame and wait for confirmation
+    if (send_frame(fd, LlTx, frame, frameSize) != 0) {
+        printf("Failed to send frame.\n");
+        free(frame);
+        return -1;
+    }
+
+    free(frame);
+    return 0;
 }
 
 ////////////////////////////////////////////////
