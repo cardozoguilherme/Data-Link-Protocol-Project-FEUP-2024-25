@@ -1,0 +1,6 @@
+# Ignore VSCode settings
+.vscode/
+Project Code/.vscode/
+
+# Ignore binary files
+Project Code/bin/
