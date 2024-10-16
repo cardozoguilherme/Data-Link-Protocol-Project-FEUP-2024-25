@@ -3,6 +3,7 @@
         "*.py": "python",
         "stat.h": "c",
         "string.h": "c",
-        "signal.h": "c"
+        "signal.h": "c",
+        "serial_port.h": "c"
     }
 }

@@ -224,49 +224,104 @@ int llopen(LinkLayer connectionParameters) {
 ////////////////////////////////////////////////
 // LLWRITE
 ////////////////////////////////////////////////
+unsigned char calculateBCC2(const unsigned char *data, int length) {
+    unsigned char bcc2 = 0;
+    for (int i = 0; i < length; i++) {
+        bcc2 ^= data[i];  // XOR all the bytes
+    }
+    return bcc2;
+}
+
+unsigned char *byteStuffing(const unsigned char *frame, int frameSize, int *stuffedFrameSize) {
+    // Allocate memory for the worst-case scenario (each byte being stuffed)
+    unsigned char *stuffedFrame = malloc(frameSize * 2 * sizeof(unsigned char));
+    if (!stuffedFrame) {
+        printf("Failed to allocate memory for byte stuffing.\n");
+        return NULL;
+    }
+
+    int j = 0;  // Index for the stuffed frame
+    for (int i = 0; i < frameSize; i++) {
+        if (frame[i] == 0x7E) {
+            // If the byte is a flag, perform byte stuffing
+            stuffedFrame[j++] = 0x7D;
+            stuffedFrame[j++] = 0x5E;
+        } else if (frame[i] == 0x7D) {
+            // If the byte is an escape, perform byte stuffing
+            stuffedFrame[j++] = 0x7D;
+            stuffedFrame[j++] = 0x5D;
+        } else {
+            // Otherwise, copy the byte as is
+            stuffedFrame[j++] = frame[i];
+        }
+    }
+
+    *stuffedFrameSize = j;  // Update the stuffed frame size
+    return stuffedFrame;
+}
+
 int llwrite(const unsigned char *buf, int bufSize) {
     if (buf == NULL || bufSize <= 0 || bufSize > MAX_PAYLOAD_SIZE) {
         printf("Invalid buffer or buffer size.\n");
         return -1;
     }
-    
 
-    //
-    extern int fd;
-    //  
+    extern int fd;  // File descriptor for the serial port, set globally
+    unsigned char address = A_SENDER;  // Address of the sender
+    static unsigned char control = 0x00;  // Control field for alternating sequence numbers (Stop-and-Wait)
+    unsigned char bcc1 = address ^ control;  // Calculate BCC1 by XORing address and control fields
 
-    // Define address and control code for the data frame
-    unsigned char address = A_SENDER; // Sender's address
-    unsigned char control = 0x01; // Assuming 0x01 is the control code for data
+    int frameSize = 5 + bufSize;  // Total frame size (header + data + BCC2 + flags)
+    unsigned char *frame = malloc((frameSize + 2) * sizeof(unsigned char));  // Allocate memory for the frame
 
-    // Calculate BCC (Address XOR Control)
-    unsigned char bcc = address ^ control;
-
-    // Frame size
-    int frameSize = 5 + bufSize; // 5 bytes for FLAG + A + C + BCC + FLAG
-    unsigned char *frame = malloc(frameSize * sizeof(unsigned char));
-    
     if (!frame) {
         printf("Failed to allocate memory for frame.\n");
         return -1;
     }
 
-    frame[0] = FLAG; // Start
-    frame[1] = address; // Sender address
-    frame[2] = control; // Control code
-    memcpy(&frame[3], buf, bufSize); // Copy data into the frame
-    frame[3 + bufSize] = bcc; // BCC
-    frame[4 + bufSize] = FLAG; // End
+    // Construct the frame
+    frame[0] = FLAG;               // Start flag
+    frame[1] = address;            // Address field
+    frame[2] = control;            // Control field
+    frame[3] = bcc1;               // BCC1
+    memcpy(&frame[4], buf, bufSize);  // Copy the data into the frame
+    frame[4 + bufSize] = calculateBCC2(buf, bufSize);  // Calculate BCC2 for data and append it
+    frame[5 + bufSize] = FLAG;      // End flag
 
-    // Send the frame and wait for confirmation
-    if (send_frame(fd, LlTx, frame, frameSize) != 0) {
-        printf("Failed to send frame.\n");
-        free(frame);
-        return -1;
+    // Apply byte stuffing to ensure transparency (escape special characters)
+    int stuffedFrameSize;
+    unsigned char *stuffedFrame = byteStuffing(frame, frameSize + 2, &stuffedFrameSize);
+
+    free(frame);  // Free the original frame as the stuffed frame will be sent
+
+    int attempts = 0;
+    while (attempts < 3) {  // Try sending the frame up to 3 times
+        // Send the stuffed frame
+        if (send_frame(fd, LlTx, stuffedFrame, stuffedFrameSize) != 0) {
+            printf("Error sending frame.\n");
+            free(stuffedFrame);
+            return -1;
+        }
+
+        // Wait for acknowledgment (ACK or NACK)
+        int result = check_frame(fd, LlTx);
+        if (result == 0) {  // If ACK is received
+            printf("Frame acknowledged.\n");
+            free(stuffedFrame);
+            control ^= 0x01;  // Alternate the control field for the next frame (Stop-and-Wait)
+            return bufSize;   // Success, return the number of bytes written
+        } else if (result == -1) {  // If NACK (REJ) is received, retransmit
+            printf("Frame rejected, retransmitting...\n");
+        } else {  // If timeout occurs, retransmit
+            printf("Timeout, retransmitting...\n");
+        }
+        attempts++;  // Increment the number of attempts
     }
 
-    free(frame);
-    return 0;
+    // If all attempts failed, return error
+    printf("Failed to send frame after 3 attempts.\n");
+    free(stuffedFrame);
+    return -1;
 }
 
 ////////////////////////////////////////////////
