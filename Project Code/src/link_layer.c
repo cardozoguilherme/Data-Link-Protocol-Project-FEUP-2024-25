@@ -43,7 +43,7 @@ void alarmHandler(int signal) {
     alarmCount++;
 }
 
-int check_frame(int fd, LinkLayerRole role) {
+int check_frame(LinkLayerRole role) {
 
     State currentState = START;
     unsigned char byte;
@@ -77,7 +77,7 @@ int check_frame(int fd, LinkLayerRole role) {
 
                 case A_RCV:
                     // Expecting the control byte
-                    if (role == LlTx && (byte == C_UA)) { // Later we should implement RR/REJ
+                    if (role == LlTx && (byte == C_UA)) { // Later we should implement RR/REJ/Stop and Wait
                         control = byte;  // Receiver replies with UA
                         currentState = C_RCV;
                     } else if (role == LlRx && byte == C_SET) { 
@@ -123,7 +123,7 @@ int check_frame(int fd, LinkLayerRole role) {
 
 
 
-int send_frame(int fd, LinkLayerRole role, const unsigned char *frame, int frame_size) {
+int send_frame(LinkLayerRole role, const unsigned char *frame, int frame_size) {
     // Install the alarm handler for retransmissions
     if (signal(SIGALRM, alarmHandler) == SIG_ERR) {
         perror("Unable to catch SIGALRM");
@@ -148,7 +148,7 @@ int send_frame(int fd, LinkLayerRole role, const unsigned char *frame, int frame
         alarmEnabled = TRUE;
 
         // Wait for the acknowledgment (reply frame)
-        if (check_frame(fd, role) == 0) {
+        if (check_frame(role) == 0) {
             // Frame was successfully acknowledged
             printf("Reply frame received successfully!\n");
             alarm(0);  // Disable the alarm since we got a valid reply
@@ -190,13 +190,13 @@ int llopen(LinkLayer connectionParameters) {
             BBC1,
             FLAG,
         };
-        if(send_frame(fd, LlTx, set_frame, 5) != 0) {
+        if(send_frame(LlTx, set_frame, 5) != 0) {
             printf("Error sending frame or receiving reply\n");
             return -1;
         }
     } else if (connectionParameters.role == LlRx) {
 
-        if(check_frame(fd, LlRx) != 0) {
+        if(check_frame(LlRx) != 0) {
             printf("Error reading frame\n");
             return -1;
         }
@@ -209,7 +209,7 @@ int llopen(LinkLayer connectionParameters) {
             BBC1,
             FLAG,
         };
-        if(send_frame(fd, LlRx, ua_frame, 5) != 0) {
+        if(send_frame(LlRx, ua_frame, 5) != 0) {
             printf("Error sending frame or receiving reply\n");
             return -1;
         }
@@ -266,7 +266,6 @@ int llwrite(const unsigned char *buf, int bufSize) {
         return -1;
     }
 
-    extern int fd;  // File descriptor for the serial port, set globally
     unsigned char address = A_SENDER;  // Address of the sender
     static unsigned char control = 0x00;  // Control field for alternating sequence numbers (Stop-and-Wait)
     unsigned char bcc1 = address ^ control;  // Calculate BCC1 by XORing address and control fields
@@ -293,30 +292,32 @@ int llwrite(const unsigned char *buf, int bufSize) {
     unsigned char *stuffedFrame = byteStuffing(frame, frameSize + 2, &stuffedFrameSize);
 
     free(frame);  // Free the original frame as the stuffed frame will be sent
-
+    send_frame(stuffedFrame, stuffedFrameSize);
     int attempts = 0;
-    while (attempts < 3) {  // Try sending the frame up to 3 times
-        // Send the stuffed frame
-        if (send_frame(fd, LlTx, stuffedFrame, stuffedFrameSize) != 0) {
-            printf("Error sending frame.\n");
-            free(stuffedFrame);
-            return -1;
-        }
+    // while (attempts < 3) {  // Try sending the frame up to 3 times
+    //     // Send the stuffed frame
+    //     if (send_frame(LlTx, stuffedFrame, stuffedFrameSize) != 0) {
+    //         printf("Error sending frame.\n");
+    //         free(stuffedFrame);
+    //         return -1;
+    //     }
+    //     // Wait for acknowledgment (ACK or NACK)
+    //     int result = check_frame(LlTx);
+    //     if (result == 0) {  // If ACK is received
+    //         printf("Frame acknowledged.\n");
+    //         free(stuffedFrame);
+    //         control ^= 0x80;  // Alternate the control field for the next frame (Stop-and-Wait)
 
-        // Wait for acknowledgment (ACK or NACK)
-        int result = check_frame(fd, LlTx);
-        if (result == 0) {  // If ACK is received
-            printf("Frame acknowledged.\n");
-            free(stuffedFrame);
-            control ^= 0x01;  // Alternate the control field for the next frame (Stop-and-Wait)
-            return bufSize;   // Success, return the number of bytes written
-        } else if (result == -1) {  // If NACK (REJ) is received, retransmit
-            printf("Frame rejected, retransmitting...\n");
-        } else {  // If timeout occurs, retransmit
-            printf("Timeout, retransmitting...\n");
-        }
-        attempts++;  // Increment the number of attempts
-    }
+    //         // STOP AND WAIT...
+
+    //         return bufSize;   // Success, return the number of bytes written
+    //     } else if (result == -1) {  // If NACK (REJ) is received, retransmit
+    //         printf("Frame rejected, retransmitting...\n");
+    //     } else {  // If timeout occurs, retransmit
+    //         printf("Timeout, retransmitting...\n");
+    //     }
+    //     attempts++;  // Increment the number of attempts
+    // }
 
     // If all attempts failed, return error
     printf("Failed to send frame after 3 attempts.\n");
