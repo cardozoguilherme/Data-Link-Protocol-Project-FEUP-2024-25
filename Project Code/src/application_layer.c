@@ -82,9 +82,7 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
                 break;
             } else if (bytesRead < 0) {
                 printf("Error reading data. Trying again\n");
-            }
-
-            if (fwrite(buffer, 1, bytesRead, file) != bytesRead) {
+            } else if(fwrite(buffer, 1, bytesRead, file) != bytesRead) {
                 perror("Error writing to file");
                 fclose(file);
                 llclose(TRUE);
