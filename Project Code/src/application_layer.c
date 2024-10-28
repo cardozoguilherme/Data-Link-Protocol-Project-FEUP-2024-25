@@ -74,8 +74,16 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
 
         unsigned char buffer[MAX_PAYLOAD_SIZE];
         int bytesRead;
-        while ((bytesRead = llread(buffer)) > 0) {
-            // Receive data packets
+        
+        while(TRUE) {
+            bytesRead = llread(buffer);
+            if (bytesRead == 0) {
+                printf("Connection closed by remote host.\n");
+                break;
+            } else if (bytesRead < 0) {
+                printf("Error reading data. Trying again\n");
+            }
+
             if (fwrite(buffer, 1, bytesRead, file) != bytesRead) {
                 perror("Error writing to file");
                 fclose(file);
@@ -83,7 +91,9 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
                 exit(1);
             }
             printf("Received %d bytes.\n", bytesRead);
+
         }
+
         fclose(file);
         printf("File reception completed successfully.\n");
     }
