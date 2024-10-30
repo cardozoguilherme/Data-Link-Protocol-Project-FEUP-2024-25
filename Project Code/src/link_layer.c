@@ -61,13 +61,15 @@ typedef enum {
     INFO_STOP
 } Information_frame_state;
 
+LinkLayerRole ROLE;
+
 unsigned char calculateBCC2(const unsigned char *data, int length) {
     unsigned char bcc2 = 0;
     for (int i = 0; i < length; i++) {
         bcc2 ^= data[i];  // XOR all the bytes
     }
-    return 0xef;
-    // return bcc2;
+    
+    return bcc2;
 }
 
 int destuffBytes(const unsigned char* input, int inputSize, unsigned char* output) {
@@ -289,6 +291,7 @@ int send_frame(LinkLayerRole role, const unsigned char *frame, int frame_size) {
 // LLOPEN
 ////////////////////////////////////////////////
 int llopen(LinkLayer connectionParameters) {
+    ROLE = connectionParameters.role;
     int fd = openSerialPort(connectionParameters.serialPort, connectionParameters.baudRate);
     if (fd < 0) {
         printf("Error opening serial port\n");
@@ -545,25 +548,6 @@ int llread(unsigned char *packet) {
 ////////////////////////////////////////////////
 
 int llclose(int showStatistics) {
-    // Define the DISC frame for disconnection
-    unsigned char address = A_SENDER;
-    unsigned char close_control = DISC;  // DISC control field (00001011)
-    unsigned char bcc1 = address ^ close_control;
-    const unsigned char disc_frame[5] = {
-        FLAG,
-        address,
-        close_control,
-        bcc1,
-        FLAG
-    };
-
-    const unsigned char ua_frame[5] = {
-        FLAG,
-        address,
-        C_UA,
-        address ^ C_UA,
-        FLAG
-    };
 
     // Set up the alarm handler for retransmissions
     if (signal(SIGALRM, alarmHandler) == SIG_ERR) {
@@ -573,36 +557,88 @@ int llclose(int showStatistics) {
 
     int attempts = 0;
     while (attempts < 3) {
-        printf("Attempt #%d: Sending DISC frame...\n", attempts + 1);
-        if (send_frame(LlTx, disc_frame, sizeof(disc_frame)) != 0) {
-            printf("Error sending DISC frame.\n");
-            return -1;
-        }
+        if(ROLE == LlTx) {
+            unsigned char address = A_SENDER;
+            unsigned char close_control = DISC;  // DISC control field (00001011)
+            unsigned char bcc1 = address ^ close_control;
+            const unsigned char disc_frame[5] = {
+                FLAG,
+                address,
+                close_control,
+                bcc1,
+                FLAG
+            };
 
-        alarm(3);
-        alarmEnabled = TRUE;
-
-        if (check_setup_frame(LlTx, DISC) == 0) {  // DISC received
-            printf("Received DISC frame, closing connection.\n");
-
-            if (send_frame(LlTx, ua_frame, sizeof(ua_frame)) != 0) {
-                printf("Error sending UA frame.\n");
+            const unsigned char ua_frame[5] = {
+                FLAG,
+                address,
+                C_UA,
+                address ^ C_UA,
+                FLAG
+            };
+            printf("Attempt #%d: Sending DISC frame...\n", attempts + 1);
+            if (send_frame(LlTx, disc_frame, sizeof(disc_frame)) != 0) {
+                printf("Error sending DISC frame.\n");
                 return -1;
             }
-            alarm(0);  
-            closeSerialPort();
 
-            // Always print statistics
-            printf("Transmission statistics:\n");
-            printf("Total frames sent: %d\n", totalFramesSent);
-            printf("Total retransmissions: %d\n", totalRetransmissions);
-            printf("Total timeouts: %d\n", totalTimeouts);
+            alarm(3);
+            alarmEnabled = TRUE;
 
-            return 0;
+            if (check_setup_frame(LlTx, DISC) == 0) {  // DISC received
+                printf("Received DISC frame, closing connection.\n");
+
+                if (send_frame(LlTx, ua_frame, sizeof(ua_frame)) != 0) {
+                    printf("Error sending UA frame.\n");
+                    return -1;
+                }
+                alarm(0);
+                closeSerialPort();
+
+                // Always print statistics
+                printf("Transmission statistics:\n");
+                printf("Total frames sent: %d\n", totalFramesSent);
+                printf("Total retransmissions: %d\n", totalRetransmissions);
+                printf("Total timeouts: %d\n", totalTimeouts);
+
+                return 0;
+            } else {
+                printf("Timeout or error receiving DISC, retrying DISC frame...\n");
+            }
+
         } else {
-            printf("Timeout or error receiving DISC, retrying DISC frame...\n");
-        }
+            unsigned char address = A_RECEIVER;
+            unsigned char close_control = DISC;  // DISC control field (00001011)
+            unsigned char bcc1 = address ^ close_control;
+            const unsigned char disc_frame[5] = {
+                FLAG,
+                address,
+                close_control,
+                bcc1,
+                FLAG
+            };
 
+            if (check_setup_frame(LlRx, DISC) == 0) {  // DISC received
+                printf("Received DISC frame, closing connection.\n");
+
+                if (send_frame(LlRx, disc_frame, sizeof(disc_frame)) != 0) {
+                    printf("Error sending UA frame.\n");
+                    return -1;
+                }
+
+                if (check_setup_frame(LlRx, C_UA) != 0) {
+                    printf("Error sending UA frame.\n");
+                    return -1;
+                }
+
+                alarm(0);
+                closeSerialPort();
+
+                return 0;
+            } else {
+                printf("Timeout or error receiving DISC, retrying DISC frame...\n");
+            }
+        }
         pause();
 
         if (!alarmEnabled) {
@@ -610,7 +646,6 @@ int llclose(int showStatistics) {
             printf("Retrying DISC transmission...\n");
         }
     }
-
     printf("Failed to close connection after 3 attempts.\n");
     return -1;
 }
