@@ -48,7 +48,7 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
             llclose(TRUE);  // closes the connection with statistics display
             exit(1);
         }
-
+        
         unsigned char buffer[MAX_PAYLOAD_SIZE];
         int bytesRead;
         while ((bytesRead = fread(buffer, 1, MAX_PAYLOAD_SIZE, file)) > 0) {
@@ -89,7 +89,6 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
                 exit(1);
             }
             printf("Received %d bytes.\n", bytesRead);
-
         }
 
         fclose(file);

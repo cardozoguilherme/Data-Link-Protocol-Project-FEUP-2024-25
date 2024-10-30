@@ -14,7 +14,6 @@
 // MISC
 #define _POSIX_SOURCE 1 // POSIX compliant source
 
-#define BUF_SIZE 50 // Frame size
 #define FLAG 0x7E // 01111110 (0x7E)
 // A (Address)
 #define A_SENDER 0x03   // 00000011 (0x03) – frames sent by the Sender or answers from the Receiver
@@ -23,10 +22,22 @@
 #define C_SET 0x03 // SET: 00000011 (0x03)
 #define C_UA 0x07  // UA: 00000111 (0x07)
 
+#define C_0 0x00 // 00000000 (0x00)
+#define C_1 0x80 // 01000000 (0x80)
+
+#define RR_0 0xAA
+#define RR_1 0xAB
+#define REJ0 0x54
+#define REJ1 0x55
+#define DISC 0x0B
+
 // Communications statistics (llclose)
 int totalFramesSent = 0;       // Total frames sent
 int totalRetransmissions = 0;  // Total retransmissions
 int totalTimeouts = 0;         // Total timeouts
+
+static unsigned char control = C_0;
+
 
 // Define state machine states for setup frames
 typedef enum {
@@ -50,6 +61,46 @@ typedef enum {
     INFO_STOP
 } Information_frame_state;
 
+unsigned char calculateBCC2(const unsigned char *data, int length) {
+    unsigned char bcc2 = 0;
+    for (int i = 0; i < length; i++) {
+        bcc2 ^= data[i];  // XOR all the bytes
+    }
+    return 0xef;
+    // return bcc2;
+}
+
+int destuffBytes(const unsigned char* input, int inputSize, unsigned char* output) {
+    int outputSize = 0;
+    int i = 0;
+
+    while(i < inputSize) {
+        if(input[i] == 0x7D) { // Escape byte detected
+            i++; // Move to next byte
+
+            if(i >= inputSize) {
+                printf("Error: Truncated escape sequence at end of input.\n");
+                return -1; // Indicate error
+            }
+
+            if(input[i] == 0x5E) {
+                output[outputSize++] = 0x7E; // Replace with 0x7e
+            } else if(input[i] == 0x5D) {
+                output[outputSize++] = 0x7D; // Replace with 0x7d
+            } else {
+                printf("Error: Invalid escape sequence 0x7d 0x%02x.\n", input[i]);
+                return -1; // Indicate error
+            }
+        } else {
+            output[outputSize++] = input[i];
+        }
+
+        i++;
+    }
+
+    return outputSize;
+}
+
 
 int alarmEnabled = FALSE;
 volatile int alarmCount = 0;
@@ -60,14 +111,14 @@ void alarmHandler(int signal) {
     alarmCount++;
 }
 
-int check_setup_frame(LinkLayerRole role) {
+int check_setup_frame(LinkLayerRole role, unsigned char control_expected) {
 
     Setup_frame_state currentState = SETUP_START;
     unsigned char byte;
     unsigned char address = 0;
-    unsigned char control = 0;
     unsigned char bcc = 0;
     volatile int stop_flag = FALSE;
+    unsigned char control_received;
 
     while (stop_flag == FALSE) {
         int bytes = readByteSerialPort(&byte);
@@ -83,38 +134,31 @@ int check_setup_frame(LinkLayerRole role) {
 
                 case SETUP_FLAG_RCV:
                     // Expecting the address byte
-                    if ((byte == A_RECEIVER && role == LlTx) || (byte == A_SENDER && role == LlRx)) {
+                    if (byte == A_SENDER) {
                         address = byte;
                         currentState = SETUP_A_RCV;
-                    } else if (byte != FLAG) { 
-                        currentState = SETUP_START;
+                    } else { 
+                        return -1;
                     }
                     break;
 
                 case SETUP_A_RCV:
                     // Expecting the control byte
-                    if (role == LlTx && (byte == C_UA)) { 
-                        control = byte;
+                    if (byte == control_expected) { 
+                        control_received = byte;
                         currentState = SETUP_C_RCV;
-                    } else if (role == LlRx && byte == C_SET) { 
-                        control = byte;
-                        currentState = SETUP_C_RCV;
-                    } else if (byte == FLAG) {
-                        currentState = SETUP_FLAG_RCV; 
                     } else { 
-                        currentState = SETUP_START;
+                        return -1;
                     }
                     break;
 
                 case SETUP_C_RCV:
                     // Expecting BCC (A ^ C)
-                    bcc = address ^ control;
+                    bcc = address ^ control_received;
                     if (byte == bcc) {
                         currentState = SETUP_BCC_OK;
-                    } else if (byte == FLAG) {
-                        currentState = SETUP_FLAG_RCV;
                     } else { 
-                        currentState = SETUP_START;
+                        return -1;
                     }
                     break;
 
@@ -124,7 +168,7 @@ int check_setup_frame(LinkLayerRole role) {
                         currentState = SETUP_STOP; 
                         stop_flag = TRUE;
                     } else { 
-                        currentState = SETUP_START;
+                        return -1;
                     }
                     break;
 
@@ -141,127 +185,88 @@ int check_information_frame(LinkLayerRole role, unsigned char *data_buffer, int 
     Information_frame_state currentState = INFO_START;
     unsigned char byte;
     unsigned char address = 0;
-    unsigned char control = 0;
+    unsigned char I_control = 0;
     unsigned char bcc1 = 0;
-    unsigned char bcc2 = 0;
-    int data_index = 0;
-    bool is_escaped = false;
+    int data_index = -1;
     volatile int stop_flag = FALSE;
-    int count = 0;
+
+    unsigned char data_frame[MAX_PAYLOAD_SIZE*2];
 
     while (!stop_flag) {
         int bytes = readByteSerialPort(&byte);
         if (bytes > 0) {
-
-            if (count < 5){
-                printf("Current state: %d\n", currentState);
-                printf("Byte read: %02x\n", byte);
-                count++;
-            } else if(count == 5){
-                printf("Processing data...\n");
-                count++;
-            }
-
+            
             switch (currentState) {
                 case INFO_START:
                     if (byte == FLAG) {
                         currentState = INFO_FLAG_RCV;
-                        data_index = 0;
                     }
                     break;
 
                 case INFO_FLAG_RCV:
-                    if ((byte == A_RECEIVER && role == LlTx) || 
-                        (byte == A_SENDER && role == LlRx)) {
+                    if (byte == A_SENDER) {
                         address = byte;
                         currentState = INFO_A_RCV;
                     } else if (byte != FLAG) {
-                        currentState = INFO_START;
+                        return -1;
                     }
                     break;
 
                 case INFO_A_RCV:
-                    if (byte == 0x00 || byte == 0x80) {  // Information frame numbers (0 or 1)
-                        control = byte;
+                    if (byte == C_0 || byte == C_1) {  // Information frame numbers (0 or 1)
+                        I_control = byte;
                         currentState = INFO_C_RCV;
-                    } else if (byte == FLAG) {
-                        currentState = INFO_FLAG_RCV;
                     } else {
-                        currentState = INFO_START;
+                        return -1;
                     }
                     break;
 
                 case INFO_C_RCV:
-                    bcc1 = address ^ control;
+                    bcc1 = address ^ I_control;
                     if (byte == bcc1) {
                         currentState = INFO_BCC1_OK;
-                    } else if (byte == FLAG) {
-                        currentState = INFO_FLAG_RCV;
                     } else {
-                        currentState = INFO_START;
+                        return -1;
                     }
                     break;
 
                 case INFO_BCC1_OK:
                     if (byte == FLAG) {
-                        if (data_index == 0) {  // Empty I-frame, no data field
-                            currentState = INFO_STOP;
-                            stop_flag = TRUE;
-                        } else if (bcc2 == 0) {  // Check if BCC2 is valid for non-empty data
-                            *data_length = data_index;
-                            currentState = INFO_STOP;
-                            stop_flag = TRUE;
-                        } else {
-                            currentState = INFO_START;  // BCC1 mismatch, reset
+                        if (data_index == -1) {  // Empty I-frame, no data field
+                            return -2;
+                        } 
+                        else {
+                            return -1;
                         }
                     } else {
-                        // Handle byte stuffing if escape character is detected
-                        if (byte == 0x7D && !is_escaped) {
-                            is_escaped = true;
-                        } else {
-                            if (is_escaped) {
-                                byte ^= 0x20;  // Unstuff byte
-                                is_escaped = false;
-                            }
-                            // Store data and calculate BCC2
-                            if (data_index < BUF_SIZE) {
-                                data_buffer[data_index++] = byte;
-                                bcc2 ^= byte;  // Update BCC2
-                            }
-                            currentState = INFO_DATA_RCV;
-                        }
+                        data_index = 0;
+                        currentState = INFO_DATA_RCV;
                     }
                     break;
 
                 case INFO_DATA_RCV:
-                    if (byte == 0x7D && !is_escaped) {
-                        is_escaped = true;  // Escape next byte
-                    } else {
-                        if (is_escaped) {
-                            byte ^= 0x20;  // Unstuff byte
-                            is_escaped = false;
-                        }
-                        if (byte == FLAG) {
-                            printf("Received end FLAG\n");
-                            if (bcc2 == 0) {  // BCC2 should be zero if no error in data
-                                *data_length = data_index;
-                                currentState = INFO_STOP;
-                                stop_flag = TRUE;
-                            } else {
-                                printf("BCC2 error\n");
-                                stop_flag = TRUE;
-                            }
-                        } else if (data_index < BUF_SIZE) {
-                            data_buffer[data_index++] = byte;
-                            bcc2 ^= byte;  // Update BCC2
-                        }
+                    
+                    if(byte==FLAG){            
+                        currentState = INFO_STOP;
+                        stop_flag = TRUE;
+                        break;
                     }
+
+                    data_frame[data_index] = byte;
+                    data_index++;
                     break;
                 default:
                     currentState = INFO_START;
                     break;
             }
         }
+    }
+
+    *data_length = destuffBytes(data_frame, data_index, data_buffer);
+
+    if(*data_length == -1) {
+        printf("Error during byte destuffing.\n");
+        return -1;
     }
 
     return (currentState == INFO_STOP) ? 0 : -1;
@@ -306,7 +311,7 @@ int llopen(LinkLayer connectionParameters) {
         }
         printf("SET Frame sent\n");
 
-        if(check_setup_frame(LlTx) != 0) {
+        if(check_setup_frame(LlTx, C_UA) != 0) {
             printf("Error reading UA frame\n");
             return -1;
         }
@@ -315,16 +320,16 @@ int llopen(LinkLayer connectionParameters) {
 
     } else if (connectionParameters.role == LlRx) {
 
-        if(check_setup_frame(LlRx) != 0) {
+        if(check_setup_frame(LlRx, C_SET) != 0) {
             printf("Error reading SET frame\n");
             return -1;
         }
         printf("SET frame read\n");
 
-        char BBC1 = A_RECEIVER ^ C_UA;
+        char BBC1 = A_SENDER ^ C_UA;
         const unsigned char ua_frame[5] = {
             FLAG,
-            A_RECEIVER,
+            A_SENDER,
             C_UA,
             BBC1,
             FLAG,
@@ -345,13 +350,7 @@ int llopen(LinkLayer connectionParameters) {
 ////////////////////////////////////////////////
 // LLWRITE
 ////////////////////////////////////////////////
-unsigned char calculateBCC2(const unsigned char *data, int length) {
-    unsigned char bcc2 = 0;
-    for (int i = 0; i < length; i++) {
-        bcc2 ^= data[i];  // XOR all the bytes
-    }
-    return bcc2;
-}
+
 
 unsigned char *byteStuffing(const unsigned char *frame, int frameSize, int *stuffedFrameSize) {
     // Allocate memory for the worst-case scenario (each byte being stuffed)
@@ -363,7 +362,7 @@ unsigned char *byteStuffing(const unsigned char *frame, int frameSize, int *stuf
 
     int j = 0;  // Index for the stuffed frame
     for (int i = 0; i < frameSize; i++) {
-        if (frame[i] == 0x7E) {
+        if (frame[i] == FLAG) {
             // If the byte is a flag, perform byte stuffing
             stuffedFrame[j++] = 0x7D;
             stuffedFrame[j++] = 0x5E;
@@ -386,8 +385,6 @@ int llwrite(const unsigned char *buf, int bufSize) {
         printf("Invalid buffer or buffer size.\n");
         return -1;
     }
-
-    static unsigned char control = 0x00;
     
     unsigned char address = A_SENDER;  
     unsigned char bcc1 = address ^ control;
@@ -406,16 +403,14 @@ int llwrite(const unsigned char *buf, int bufSize) {
     frame[1] = address;
     frame[2] = control;
     frame[3] = bcc1;
-    
 
     int stuffedFrameSize;
     unsigned char *stuffedFrame = byteStuffing(buf, bufSize, &stuffedFrameSize);
 
-    memcpy(&frame[4], stuffedFrame, stuffedFrameSize);  
+    memcpy(&frame[4], stuffedFrame, stuffedFrameSize);
 
     frame[4 + stuffedFrameSize] = calculateBCC2(buf, bufSize);
     frame[5 + stuffedFrameSize] = FLAG;
-
 
     if (!stuffedFrame) {
         printf("Failed to allocate memory for stuffed frame.\n");
@@ -430,31 +425,33 @@ int llwrite(const unsigned char *buf, int bufSize) {
     int attempts = 0;
     while (attempts < 3) {
         // Send the stuffed frame
-        if (send_frame(LlTx, frame, stuffedFrameSize) != 0) {
+        if (send_frame(LlTx, frame, stuffedFrameSize+6) != 0) {
             printf("Error sending frame.\n");
             return -1;
         }
-        
-        printf("Information frame header:\n");
-        for(int i = 0; i < 4; i++) {
-            printf("%02X ", frame[i]);
+        unsigned char res;
+
+        if(control == C_1) {
+            res = RR_0;
+        } else {
+            res = RR_1;
         }
 
         // Increment total frames sent
         totalFramesSent++;
-        printf("\nTotal frames sent: %d\n", totalFramesSent);
+        // printf("\nTotal frames sent: %d\n", totalFramesSent);
         // Set the alarm for timeout (3 seconds)
         alarm(3);
         alarmEnabled = TRUE;
 
         // Wait for acknowledgment
-        int result = check_setup_frame(LlTx);
+        int result = check_setup_frame(LlTx, res);
         if (result == 0) {  // ACK received
             printf("Frame acknowledged.\n");
             alarm(0);
-            control ^= 0x80;
+            control ^= C_1;
             return bufSize;
-        } else if (result == -1) {  // NACK received, retransmit
+        } else if (result == -2) {  // NACK received, retransmit
             printf("Frame rejected, retransmitting...\n");
             totalRetransmissions++;  // Increment retransmission count
         } else {  // Timeout occurred, retransmit
@@ -481,7 +478,7 @@ int llwrite(const unsigned char *buf, int bufSize) {
 // LLREAD
 ////////////////////////////////////////////////
 int llread(unsigned char *packet) {
-    unsigned char data_buffer[BUF_SIZE];  // Buffer for the received data
+    unsigned char data_buffer[MAX_PAYLOAD_SIZE*2];  // Buffer for the received data
     int data_length = 0;
 
     int result = check_information_frame(LlRx, data_buffer, &data_length);
@@ -492,15 +489,17 @@ int llread(unsigned char *packet) {
         // Copy the data from data_buffer to the packet
         memcpy(packet, data_buffer, data_length);
 
+        printf("control global variable - %02x\n", control);
+
         // Send RR (Receiver Ready) frame to acknowledge reception
         unsigned char rr_frame[5];
-        unsigned char address = A_RECEIVER;
-        unsigned char control = (data_buffer[2] == 0x00) ? 0x05 : 0x85;  // RR0 or RR1
-        unsigned char bcc1 = address ^ control;
+        unsigned char address = A_SENDER;
+        unsigned char res_control = control ? RR_0 : RR_1;  // RR0 or RR1
+        unsigned char bcc1 = address ^ res_control;
 
         rr_frame[0] = FLAG;
         rr_frame[1] = address;
-        rr_frame[2] = control;
+        rr_frame[2] = res_control;
         rr_frame[3] = bcc1;
         rr_frame[4] = FLAG;
 
@@ -508,20 +507,23 @@ int llread(unsigned char *packet) {
             printf("Error sending RR frame.\n");
             return -1;
         }
+        printf("RR frame sent successfully.\n");
+
+        control ^= 0x80;
 
         return data_length;  // Return the length of the received data
-    } else {
+    } else if (result == -2) {  // Frame error detected
         // If we encounter a frame error, send REJ frame
         printf("Error in information frame, sending REJ frame.\n");
 
         unsigned char rej_frame[5];
-        unsigned char address = A_RECEIVER;
-        unsigned char control = (data_buffer[2] == 0x00) ? 0x54 : 0x55;  // REJ0 or REJ1
-        unsigned char bcc1 = address ^ control;
+        unsigned char address = A_SENDER;
+        unsigned char res_control = (data_buffer[2] == C_0) ? REJ0 : REJ1;  // REJ0 or REJ1
+        unsigned char bcc1 = address ^ res_control;
 
         rej_frame[0] = FLAG;
         rej_frame[1] = address;
-        rej_frame[2] = control;
+        rej_frame[2] = res_control;
         rej_frame[3] = bcc1;
         rej_frame[4] = FLAG;
 
@@ -529,6 +531,8 @@ int llread(unsigned char *packet) {
             printf("Error sending REJ frame.\n");
             return -1;
         }
+
+        printf("REJ frame sent successfully.\n");
         return -1;
     }
 
@@ -543,13 +547,21 @@ int llread(unsigned char *packet) {
 int llclose(int showStatistics) {
     // Define the DISC frame for disconnection
     unsigned char address = A_SENDER;
-    unsigned char control = 0x0B;  // DISC control field (00001011)
-    unsigned char bcc1 = address ^ control;
+    unsigned char close_control = DISC;  // DISC control field (00001011)
+    unsigned char bcc1 = address ^ close_control;
     const unsigned char disc_frame[5] = {
         FLAG,
         address,
-        control,
+        close_control,
         bcc1,
+        FLAG
+    };
+
+    const unsigned char ua_frame[5] = {
+        FLAG,
+        address,
+        C_UA,
+        address ^ C_UA,
         FLAG
     };
 
@@ -570,10 +582,15 @@ int llclose(int showStatistics) {
         alarm(3);
         alarmEnabled = TRUE;
 
-        if (check_setup_frame(LlTx) == 0) {  // UA received
-            printf("Received UA frame, closing connection.\n");
+        if (check_setup_frame(LlTx, DISC) == 0) {  // DISC received
+            printf("Received DISC frame, closing connection.\n");
+
+            if (send_frame(LlTx, ua_frame, sizeof(ua_frame)) != 0) {
+                printf("Error sending UA frame.\n");
+                return -1;
+            }
             alarm(0);  
-            closeSerialPort();  
+            closeSerialPort();
 
             // Always print statistics
             printf("Transmission statistics:\n");
@@ -583,7 +600,7 @@ int llclose(int showStatistics) {
 
             return 0;
         } else {
-            printf("Timeout or error receiving UA, retrying DISC frame...\n");
+            printf("Timeout or error receiving DISC, retrying DISC frame...\n");
         }
 
         pause();
