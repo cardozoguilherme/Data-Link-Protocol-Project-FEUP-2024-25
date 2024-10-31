@@ -192,90 +192,94 @@ int check_information_frame(LinkLayerRole role, unsigned char *data_buffer, int 
     int data_index = -1;
     volatile int stop_flag = FALSE;
 
-    unsigned char data_frame[MAX_PAYLOAD_SIZE*2];
+    unsigned char data_frame[MAX_PAYLOAD_SIZE * 2];
 
     while (!stop_flag) {
         int bytes = readByteSerialPort(&byte);
-        if (bytes > 0) {
-            
-            switch (currentState) {
-                case INFO_START:
-                    if (byte == FLAG) {
-                        currentState = INFO_FLAG_RCV;
-                    }
-                    break;
 
-                case INFO_FLAG_RCV:
-                    if (byte == A_SENDER) {
-                        address = byte;
-                        currentState = INFO_A_RCV;
-                    } else if (byte != FLAG) {
-                        return -1;
-                    }
-                    break;
+        if (bytes < 0) {  // Erro ao ler da porta serial
+            printf("Error reading from serial port.\n");
+            return -1;
+        }
+        else if (bytes == 0) {  // Nenhum byte recebido
+            printf("No bytes received, end of transmission detected.\n");
+            return 0;  // Fim da transmissão
+        }
 
-                case INFO_A_RCV:
-                    if (byte == C_0 || byte == C_1) {  // Information frame numbers (0 or 1)
-                        I_control = byte;
-                        currentState = INFO_C_RCV;
+        // Processa o byte recebido
+        switch (currentState) {
+            case INFO_START:
+                if (byte == FLAG) {
+                    currentState = INFO_FLAG_RCV;
+                }
+                break;
+
+            case INFO_FLAG_RCV:
+                if (byte == A_SENDER) {
+                    address = byte;
+                    currentState = INFO_A_RCV;
+                } else if (byte != FLAG) {
+                    return -1;
+                }
+                break;
+
+            case INFO_A_RCV:
+                if (byte == C_0 || byte == C_1) {  // Números de quadro de informação (0 ou 1)
+                    I_control = byte;
+                    currentState = INFO_C_RCV;
+                } else {
+                    return -1;
+                }
+                break;
+
+            case INFO_C_RCV:
+                bcc1 = address ^ I_control;
+                if (byte == bcc1) {
+                    currentState = INFO_BCC1_OK;
+                } else {
+                    return -1;
+                }
+                break;
+
+            case INFO_BCC1_OK:
+                if (byte == FLAG) {
+                    if (data_index == -1) {  // I-frame vazio, sem campo de dados
+                        return -2;
                     } else {
                         return -1;
                     }
-                    break;
+                } else {
+                    data_index = 0;
+                    currentState = INFO_DATA_RCV;
+                }
+                break;
 
-                case INFO_C_RCV:
-                    bcc1 = address ^ I_control;
-                    if (byte == bcc1) {
-                        currentState = INFO_BCC1_OK;
-                    } else {
-                        return -1;
-                    }
+            case INFO_DATA_RCV:
+                if (byte == FLAG) {
+                    currentState = INFO_STOP;
+                    stop_flag = TRUE;
                     break;
+                }
 
-                case INFO_BCC1_OK:
-                    if (byte == FLAG) {
-                        if (data_index == -1) {  // Empty I-frame, no data field
-                            return -2;
-                        } 
-                        else {
-                            return -1;
-                        }
-                    } else {
-                        data_index = 0;
-                        currentState = INFO_DATA_RCV;
-                    }
-                    break;
+                data_frame[data_index] = byte;
+                data_index++;
+                break;
 
-                case INFO_DATA_RCV:
-                    
-                    if(byte==FLAG){            
-                        currentState = INFO_STOP;
-                        stop_flag = TRUE;
-                        break;
-                    }
-
-                    data_frame[data_index] = byte;
-                    data_index++;
-                    break;
-                default:
-                    currentState = INFO_START;
-                    break;
-            }
+            default:
+                currentState = INFO_START;
+                break;
         }
     }
 
     *data_length = destuffBytes(data_frame, data_index, data_buffer);
 
-    if(*data_length == -1) {
+    if (*data_length == -1) {
         printf("Error during byte destuffing.\n");
         return -1;
     }
 
-    return (currentState == INFO_STOP) ? 0 : -1;
+    return (currentState == INFO_STOP) ? 1 : -1;
 }
-
-
-
 
 int send_frame(LinkLayerRole role, const unsigned char *frame, int frame_size) {
 
@@ -486,7 +490,7 @@ int llread(unsigned char *packet) {
 
     int result = check_information_frame(LlRx, data_buffer, &data_length);
 
-    if (result == 0) {  // Successfully received a valid information frame
+    if (result == 1) {  // Successfully received a valid information frame
         printf("Information frame received successfully.\n");
 
         // Copy the data from data_buffer to the packet
@@ -537,6 +541,9 @@ int llread(unsigned char *packet) {
 
         printf("REJ frame sent successfully.\n");
         return -1;
+    } else if (result == 0) {
+        printf("End of transmission frame received.\n");
+        return 0;
     }
 
     return -1;
@@ -548,8 +555,7 @@ int llread(unsigned char *packet) {
 ////////////////////////////////////////////////
 
 int llclose(int showStatistics) {
-
-    // Set up the alarm handler for retransmissions
+    // Configura o manipulador de alarme para retransmissões
     if (signal(SIGALRM, alarmHandler) == SIG_ERR) {
         perror("Unable to catch SIGALRM");
         return -1;
@@ -557,9 +563,10 @@ int llclose(int showStatistics) {
 
     int attempts = 0;
     while (attempts < 3) {
-        if(ROLE == LlTx) {
+        if (ROLE == LlTx) {
+            // Transmissor envia DISC e aguarda DISC de resposta
             unsigned char address = A_SENDER;
-            unsigned char close_control = DISC;  // DISC control field (00001011)
+            unsigned char close_control = DISC;
             unsigned char bcc1 = address ^ close_control;
             const unsigned char disc_frame[5] = {
                 FLAG,
@@ -576,65 +583,78 @@ int llclose(int showStatistics) {
                 address ^ C_UA,
                 FLAG
             };
-            printf("Attempt #%d: Sending DISC frame...\n", attempts + 1);
+
+            printf("Attempt #%d: Transmitter sending DISC frame...\n", attempts + 1);
             if (send_frame(LlTx, disc_frame, sizeof(disc_frame)) != 0) {
                 printf("Error sending DISC frame.\n");
                 return -1;
             }
 
-            alarm(3);
+            alarm(3);  // Define o timeout para resposta DISC
             alarmEnabled = TRUE;
 
-            if (check_setup_frame(LlTx, DISC) == 0) {  // DISC received
-                printf("Received DISC frame, closing connection.\n");
+            // Espera pelo DISC do receptor
+            if (check_setup_frame(LlTx, DISC) == 0) {  // DISC recebido do receptor
+                printf("Transmitter received DISC, sending UA frame to confirm.\n");
 
+                // Envia UA para confirmar o fechamento
                 if (send_frame(LlTx, ua_frame, sizeof(ua_frame)) != 0) {
                     printf("Error sending UA frame.\n");
                     return -1;
                 }
-                alarm(0);
+                alarm(0); // Cancela o alarme após envio do UA
                 closeSerialPort();
 
-                // Always print statistics
-                printf("Transmission statistics:\n");
-                printf("Total frames sent: %d\n", totalFramesSent);
-                printf("Total retransmissions: %d\n", totalRetransmissions);
-                printf("Total timeouts: %d\n", totalTimeouts);
-
+                // Exibe estatísticas, se necessário
+                if (showStatistics == TRUE) {
+                    printf("Transmission statistics:\n");
+                    printf("Total frames sent: %d\n", totalFramesSent);
+                    printf("Total retransmissions: %d\n", totalRetransmissions);
+                    printf("Total timeouts: %d\n", totalTimeouts);
+                }
                 return 0;
             } else {
                 printf("Timeout or error receiving DISC, retrying DISC frame...\n");
             }
 
-        } else {
-            unsigned char address = A_RECEIVER;
-            unsigned char close_control = DISC;  // DISC control field (00001011)
-            unsigned char bcc1 = address ^ close_control;
-            const unsigned char disc_frame[5] = {
-                FLAG,
-                address,
-                close_control,
-                bcc1,
-                FLAG
-            };
+        } else {  // LlRx: Receptor
+            // Receptor espera DISC do transmissor
+            if (check_setup_frame(LlRx, DISC) == 0) {  // DISC recebido do transmissor
+                printf("Receiver received DISC, sending DISC in response.\n");
 
-            if (check_setup_frame(LlRx, DISC) == 0) {  // DISC received
-                printf("Received DISC frame, closing connection.\n");
+                unsigned char address = A_RECEIVER;
+                unsigned char close_control = DISC;
+                unsigned char bcc1 = address ^ close_control;
+                const unsigned char disc_frame[5] = {
+                    FLAG,
+                    address,
+                    close_control,
+                    bcc1,
+                    FLAG
+                };
 
+                // Envia DISC em resposta
                 if (send_frame(LlRx, disc_frame, sizeof(disc_frame)) != 0) {
-                    printf("Error sending UA frame.\n");
+                    printf("Error sending DISC frame.\n");
                     return -1;
                 }
 
-                if (check_setup_frame(LlRx, C_UA) != 0) {
-                    printf("Error sending UA frame.\n");
-                    return -1;
+                // Espera pelo UA do transmissor para encerrar a conexão
+                if (check_setup_frame(LlRx, C_UA) == 0) {
+                    alarm(0); // Cancela o alarme após receber o UA
+                    closeSerialPort();
+
+                    // Exibe estatísticas, se necessário
+                    if (showStatistics == TRUE) {
+                        printf("Reception statistics:\n");
+                        printf("Total frames sent: %d\n", totalFramesSent);
+                        printf("Total retransmissions: %d\n", totalRetransmissions);
+                        printf("Total timeouts: %d\n", totalTimeouts);
+                    }
+                    return 0;
+                } else {
+                    printf("Error receiving UA frame, retrying...\n");
                 }
-
-                alarm(0);
-                closeSerialPort();
-
-                return 0;
             } else {
                 printf("Timeout or error receiving DISC, retrying DISC frame...\n");
             }

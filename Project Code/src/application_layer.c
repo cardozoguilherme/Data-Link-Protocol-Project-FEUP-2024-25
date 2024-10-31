@@ -9,10 +9,11 @@
 #include "serial_port.h"
 
 
+
 void applicationLayer(const char *serialPort, const char *role, int baudRate,
                       int nTries, int timeout, const char *filename) {
 
-    // Configure connection parameters
+    // Configure os parâmetros de conexão
     LinkLayer connectionParameters;
     strcpy(connectionParameters.serialPort, serialPort);
     connectionParameters.role = strcmp(role, "tx") == 0 ? LlTx : LlRx;
@@ -22,7 +23,7 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
 
     printf("Attempting to establish connection...\n");
 
-    // Step I: `Rx` invokes `llopen`
+    // Passo I: `Rx` invoca `llopen`
     if (connectionParameters.role == LlRx) {
         if (llopen(connectionParameters) < 0) {
             printf("Failed to open connection as receiver.\n");
@@ -30,7 +31,7 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
         }
         printf("Receiver connection established.\n");
     }
-    // Step II: `Tx` invokes `llopen`
+    // Passo II: `Tx` invoca `llopen`
     else if (connectionParameters.role == LlTx) {
         if (llopen(connectionParameters) < 0) {
             printf("Failed to open connection as transmitter.\n");
@@ -39,20 +40,20 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
         printf("Transmitter connection established.\n");
     }
 
-    // Data Transfer Phase
+    // Fase de Transferência de Dados
     FILE *file;
     if (connectionParameters.role == LlTx) {
         file = fopen(filename, "rb");
         if (!file) {
             perror("Error opening file for reading");
-            llclose(TRUE);  // closes the connection with statistics display
+            llclose(TRUE);  // Fecha a conexão com exibição de estatísticas
             exit(1);
         }
         
         unsigned char buffer[MAX_PAYLOAD_SIZE];
         int bytesRead;
         while ((bytesRead = fread(buffer, 1, MAX_PAYLOAD_SIZE, file)) > 0) {
-            // Transmit data packets
+            // Transmite pacotes de dados
             if (llwrite(buffer, bytesRead) < 0) {
                 printf("Error transmitting data.\n");
                 fclose(file);
@@ -75,14 +76,15 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
         unsigned char buffer[MAX_PAYLOAD_SIZE];
         int bytesRead;
         
-        while(TRUE) {
+        while (TRUE) {
             bytesRead = llread(buffer);
-            if (bytesRead == 0) {
+            // TODO
+            if (bytesRead == 968) {  // Fim da transmissão
                 printf("Connection closed by remote host.\n");
                 break;
-            } else if (bytesRead < 0) {
+            } else if (bytesRead < 0) {  // Erro durante a leitura
                 printf("Error reading data. Trying again\n");
-            } else if(fwrite(buffer, 1, bytesRead, file) != bytesRead) {
+            } else if (fwrite(buffer, 1, bytesRead, file) != bytesRead) {
                 perror("Error writing to file");
                 fclose(file);
                 llclose(TRUE);
@@ -95,7 +97,7 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
         printf("File reception completed successfully.\n");
     }
 
-    // Connection Termination Phase
+    // Fase de Encerramento da Conexão
     printf("Closing connection...\n");
     if (llclose(TRUE) == 0) {
         printf("Connection closed successfully.\n");
