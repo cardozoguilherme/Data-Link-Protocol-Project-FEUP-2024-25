@@ -79,7 +79,7 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
         while (TRUE) {
             bytesRead = llread(buffer);
             // TODO
-            if (bytesRead == 968) {  // Fim da transmissão
+            if (bytesRead == 0) {  // Fim da transmissão
                 printf("Connection closed by remote host.\n");
                 break;
             } else if (bytesRead < 0) {  // Erro durante a leitura

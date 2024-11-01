@@ -55,7 +55,6 @@ typedef enum {
     INFO_FLAG_RCV,
     INFO_A_RCV,
     INFO_C_RCV,
-    INFO_BCC1_OK,
     INFO_DATA_RCV,
     INFO_BCC2_OK,
     INFO_STOP
@@ -136,7 +135,7 @@ int check_setup_frame(LinkLayerRole role, unsigned char control_expected) {
 
                 case SETUP_FLAG_RCV:
                     // Expecting the address byte
-                    if (byte == A_SENDER) {
+                    if (byte == A_SENDER || byte == A_RECEIVER) {
                         address = byte;
                         currentState = SETUP_A_RCV;
                     } else { 
@@ -189,95 +188,92 @@ int check_information_frame(LinkLayerRole role, unsigned char *data_buffer, int 
     unsigned char address = 0;
     unsigned char I_control = 0;
     unsigned char bcc1 = 0;
-    int data_index = -1;
+    unsigned char bcc2;
+    unsigned char new_bcc2;
+    int stuffed_data_index = -1;
     volatile int stop_flag = FALSE;
+    
 
-    unsigned char data_frame[MAX_PAYLOAD_SIZE * 2];
+    unsigned char stuffed_data_frame[MAX_PAYLOAD_SIZE * 2];
 
     while (!stop_flag) {
         int bytes = readByteSerialPort(&byte);
 
-        if (bytes < 0) {  // Erro ao ler da porta serial
-            printf("Error reading from serial port.\n");
-            return -1;
-        }
-        else if (bytes == 0) {  // Nenhum byte recebido
-            printf("No bytes received, end of transmission detected.\n");
-            return 0;  // Fim da transmissão
-        }
+        if (bytes > 0) {
+            // Processa o byte recebido
+            switch (currentState) {
+                case INFO_START:
+                    if (byte == FLAG) {
+                        currentState = INFO_FLAG_RCV;
+                    }
+                    break;
 
-        // Processa o byte recebido
-        switch (currentState) {
-            case INFO_START:
-                if (byte == FLAG) {
-                    currentState = INFO_FLAG_RCV;
-                }
-                break;
-
-            case INFO_FLAG_RCV:
-                if (byte == A_SENDER) {
-                    address = byte;
-                    currentState = INFO_A_RCV;
-                } else if (byte != FLAG) {
-                    return -1;
-                }
-                break;
-
-            case INFO_A_RCV:
-                if (byte == C_0 || byte == C_1) {  // Números de quadro de informação (0 ou 1)
-                    I_control = byte;
-                    currentState = INFO_C_RCV;
-                } else {
-                    return -1;
-                }
-                break;
-
-            case INFO_C_RCV:
-                bcc1 = address ^ I_control;
-                if (byte == bcc1) {
-                    currentState = INFO_BCC1_OK;
-                } else {
-                    return -1;
-                }
-                break;
-
-            case INFO_BCC1_OK:
-                if (byte == FLAG) {
-                    if (data_index == -1) {  // I-frame vazio, sem campo de dados
-                        return -2;
-                    } else {
+                case INFO_FLAG_RCV:
+                    if (byte == A_SENDER || byte == A_RECEIVER) {
+                        address = byte;
+                        currentState = INFO_A_RCV;
+                    } else if (byte != FLAG) {
+                        printf("INFO_FLAG_RCV RETURN -1!!!!!\n");
                         return -1;
                     }
-                } else {
-                    data_index = 0;
-                    currentState = INFO_DATA_RCV;
-                }
-                break;
-
-            case INFO_DATA_RCV:
-                if (byte == FLAG) {
-                    currentState = INFO_STOP;
-                    stop_flag = TRUE;
                     break;
-                }
 
-                data_frame[data_index] = byte;
-                data_index++;
-                break;
+                case INFO_A_RCV:
+                    if (byte == C_0 || byte == C_1) { 
+                        I_control = byte;
+                        currentState = INFO_C_RCV;
+                    } else if(byte == DISC) {
+                        return 0;
+                    } else {
+                        printf("INFO_A_RCV RETURN -1!!!!!\n");
+                        return -1;
+                    }
+                    break;
 
-            default:
-                currentState = INFO_START;
-                break;
+                case INFO_C_RCV:
+                    bcc1 = address ^ I_control;
+                    if (byte == bcc1) {
+                        currentState = INFO_DATA_RCV;
+                        stuffed_data_index = 0;
+                    } else {
+                        printf("INFO_C_RCV RETURN -1!!!!!\n");
+                        return -1;
+                    }
+                    break;
+
+                case INFO_DATA_RCV:
+                    if (byte == FLAG) {
+                        currentState = INFO_STOP;
+                        stop_flag = TRUE;
+                        stuffed_data_index--;
+                        break;
+                    }
+
+                    stuffed_data_frame[stuffed_data_index] = byte;
+                    stuffed_data_index++;
+                    break;
+
+                default:
+                    currentState = INFO_START;
+                    break;
+            }
         }
     }
 
-    *data_length = destuffBytes(data_frame, data_index, data_buffer);
+    *data_length = destuffBytes(stuffed_data_frame, stuffed_data_index, data_buffer);
 
     if (*data_length == -1) {
         printf("Error during byte destuffing.\n");
         return -1;
     }
 
+    bcc2 = stuffed_data_frame[stuffed_data_index];
+    new_bcc2 = calculateBCC2(data_buffer, *data_length);
+
+    if (bcc2 != new_bcc2) {
+        return -2;
+    }
+    
     return (currentState == INFO_STOP) ? 1 : -1;
 }
 
@@ -417,6 +413,7 @@ int llwrite(const unsigned char *buf, int bufSize) {
     memcpy(&frame[4], stuffedFrame, stuffedFrameSize);
 
     frame[4 + stuffedFrameSize] = calculateBCC2(buf, bufSize);
+    printf("[llwrite] BCC2 SENT: %02x\n", frame[4 + stuffedFrameSize]);
     frame[5 + stuffedFrameSize] = FLAG;
 
     if (!stuffedFrame) {
@@ -428,7 +425,7 @@ int llwrite(const unsigned char *buf, int bufSize) {
         perror("Unable to catch SIGALRM");
         return -1;
     }
-
+    
     int attempts = 0;
     while (attempts < 3) {
         // Send the stuffed frame
@@ -544,6 +541,9 @@ int llread(unsigned char *packet) {
     } else if (result == 0) {
         printf("End of transmission frame received.\n");
         return 0;
+    } else if (result == -1) {
+        printf("Error in the frame header.\n");
+        return -1;
     }
 
     return -1;
@@ -565,22 +565,19 @@ int llclose(int showStatistics) {
     while (attempts < 3) {
         if (ROLE == LlTx) {
             // Transmissor envia DISC e aguarda DISC de resposta
-            unsigned char address = A_SENDER;
-            unsigned char close_control = DISC;
-            unsigned char bcc1 = address ^ close_control;
             const unsigned char disc_frame[5] = {
                 FLAG,
-                address,
-                close_control,
-                bcc1,
+                A_SENDER,
+                DISC,
+                A_SENDER ^ DISC,
                 FLAG
             };
 
             const unsigned char ua_frame[5] = {
                 FLAG,
-                address,
+                A_SENDER,
                 C_UA,
-                address ^ C_UA,
+                A_SENDER ^ C_UA,
                 FLAG
             };
 
@@ -622,14 +619,11 @@ int llclose(int showStatistics) {
             if (check_setup_frame(LlRx, DISC) == 0) {  // DISC recebido do transmissor
                 printf("Receiver received DISC, sending DISC in response.\n");
 
-                unsigned char address = A_RECEIVER;
-                unsigned char close_control = DISC;
-                unsigned char bcc1 = address ^ close_control;
                 const unsigned char disc_frame[5] = {
                     FLAG,
-                    address,
-                    close_control,
-                    bcc1,
+                    A_RECEIVER,
+                    DISC,
+                    A_SENDER ^ DISC,
                     FLAG
                 };
 
