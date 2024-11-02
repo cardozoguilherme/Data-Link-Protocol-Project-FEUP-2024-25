@@ -45,7 +45,7 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
     if (connectionParameters.role == LlTx) {
         file = fopen(filename, "rb");
         if (!file) {
-            perror("Error opening file for reading");
+            perror("Error opening file for reading\n");
             llclose(TRUE);  // Fecha a conexão com exibição de estatísticas
             exit(1);
         }
@@ -68,7 +68,7 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
     } else if (connectionParameters.role == LlRx) {
         file = fopen(filename, "wb");
         if (!file) {
-            perror("Error opening file for writing");
+            perror("Error opening file for writing\n");
             llclose(TRUE);
             exit(1);
         }
@@ -80,12 +80,12 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
             bytesRead = llread(buffer);
             // TODO
             if (bytesRead == 0) {  // Fim da transmissão
-                printf("Connection closed by remote host.\n");
+                printf("Received 0 bytes.\n");
                 break;
             } else if (bytesRead < 0) {  // Erro durante a leitura
-                printf("Error reading data. Trying again\n");
+                printf("Error reading the frame header.\n");
             } else if (fwrite(buffer, 1, bytesRead, file) != bytesRead) {
-                perror("Error writing to file");
+                perror("Error writing to file\n");
                 fclose(file);
                 llclose(TRUE);
                 exit(1);
@@ -98,7 +98,7 @@ void applicationLayer(const char *serialPort, const char *role, int baudRate,
     }
 
     // Fase de Encerramento da Conexão
-    printf("Closing connection...\n");
+    printf("\nClosing connection...\n");
     if (llclose(TRUE) == 0) {
         printf("Connection closed successfully.\n");
     } else {

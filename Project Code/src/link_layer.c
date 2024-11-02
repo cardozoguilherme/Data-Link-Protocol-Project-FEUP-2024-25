@@ -35,6 +35,7 @@
 int totalFramesSent = 0;       // Total frames sent
 int totalRetransmissions = 0;  // Total retransmissions
 int totalTimeouts = 0;         // Total timeouts
+int fd;
 
 static unsigned char control = C_0;
 
@@ -124,9 +125,7 @@ int check_setup_frame(LinkLayerRole role, unsigned char control_expected) {
     while (stop_flag == FALSE) {
         int bytes = readByteSerialPort(&byte);
         if (bytes > 0) { 
-            
             switch (currentState) {
-                
                 case SETUP_START:
                     if (byte == FLAG) {
                         currentState = SETUP_FLAG_RCV;
@@ -138,8 +137,9 @@ int check_setup_frame(LinkLayerRole role, unsigned char control_expected) {
                     if (byte == A_SENDER || byte == A_RECEIVER) {
                         address = byte;
                         currentState = SETUP_A_RCV;
-                    } else { 
-                        return -1;
+                    } else if (byte != FLAG) {
+                        printf("Error in control frame header: Address\n");
+                        stop_flag = TRUE;
                     }
                     break;
 
@@ -149,7 +149,8 @@ int check_setup_frame(LinkLayerRole role, unsigned char control_expected) {
                         control_received = byte;
                         currentState = SETUP_C_RCV;
                     } else { 
-                        return -1;
+                        printf("Error in control frame header: Control\n");
+                        stop_flag = TRUE;
                     }
                     break;
 
@@ -159,7 +160,8 @@ int check_setup_frame(LinkLayerRole role, unsigned char control_expected) {
                     if (byte == bcc) {
                         currentState = SETUP_BCC_OK;
                     } else { 
-                        return -1;
+                        printf("Error in control frame header: BCC1\n");
+                        stop_flag = TRUE;
                     }
                     break;
 
@@ -169,7 +171,8 @@ int check_setup_frame(LinkLayerRole role, unsigned char control_expected) {
                         currentState = SETUP_STOP; 
                         stop_flag = TRUE;
                     } else { 
-                        return -1;
+                        printf("Error in control frame header: END_FLAG\n");
+                        stop_flag = TRUE;
                     }
                     break;
 
@@ -179,7 +182,17 @@ int check_setup_frame(LinkLayerRole role, unsigned char control_expected) {
             }
         }
     }
+
+    if (currentState != SETUP_STOP) {
+        bool buffer_empty = FALSE;
+        while (buffer_empty == FALSE) {
+            int bytes = readByteSerialPort(&byte);
+            if (bytes <= 0) buffer_empty = TRUE;
+        }
+        return -1;
+    }
     return 0;
+
 }
 
 int check_information_frame(LinkLayerRole role, unsigned char *data_buffer, int *data_length) {
@@ -192,7 +205,6 @@ int check_information_frame(LinkLayerRole role, unsigned char *data_buffer, int 
     unsigned char new_bcc2;
     int stuffed_data_index = -1;
     volatile int stop_flag = FALSE;
-    
 
     unsigned char stuffed_data_frame[MAX_PAYLOAD_SIZE * 2];
 
@@ -213,8 +225,8 @@ int check_information_frame(LinkLayerRole role, unsigned char *data_buffer, int 
                         address = byte;
                         currentState = INFO_A_RCV;
                     } else if (byte != FLAG) {
-                        printf("INFO_FLAG_RCV RETURN -1!!!!!\n");
-                        return -1;
+                        printf("Error in information frame header: Address\n\n");
+                        stop_flag = TRUE;
                     }
                     break;
 
@@ -223,10 +235,11 @@ int check_information_frame(LinkLayerRole role, unsigned char *data_buffer, int 
                         I_control = byte;
                         currentState = INFO_C_RCV;
                     } else if(byte == DISC) {
-                        return 0;
+                        currentState = INFO_STOP;
+                        stop_flag = TRUE;
                     } else {
-                        printf("INFO_A_RCV RETURN -1!!!!!\n");
-                        return -1;
+                        printf("Error in information frame header: Control\n\n");
+                        stop_flag = TRUE;
                     }
                     break;
 
@@ -236,8 +249,8 @@ int check_information_frame(LinkLayerRole role, unsigned char *data_buffer, int 
                         currentState = INFO_DATA_RCV;
                         stuffed_data_index = 0;
                     } else {
-                        printf("INFO_C_RCV RETURN -1!!!!!\n");
-                        return -1;
+                        printf("Error in information frame header: BCC1\n");
+                        stop_flag = TRUE;
                     }
                     break;
 
@@ -260,27 +273,40 @@ int check_information_frame(LinkLayerRole role, unsigned char *data_buffer, int 
         }
     }
 
-    *data_length = destuffBytes(stuffed_data_frame, stuffed_data_index, data_buffer);
+    if(stuffed_data_index >= 0) {
+        *data_length = destuffBytes(stuffed_data_frame, stuffed_data_index, data_buffer);
 
-    if (*data_length == -1) {
-        printf("Error during byte destuffing.\n");
+        if (*data_length == -1) {
+            printf("Error in information frame: DATA (BCC2)\n\n");
+            return -2;
+        }
+
+        bcc2 = stuffed_data_frame[stuffed_data_index];
+        new_bcc2 = calculateBCC2(data_buffer, *data_length);
+
+        if (bcc2 != new_bcc2) {
+            return -2;
+            printf("Error in information frame: DATA (BCC2)\n");
+        }
+        return 1;
+    }
+
+    if (currentState != INFO_STOP) {
+        bool buffer_empty = FALSE;
+        while (buffer_empty == FALSE) {
+            int bytes = readByteSerialPort(&byte);
+            if (bytes <= 0) buffer_empty = TRUE;
+        }
         return -1;
     }
-
-    bcc2 = stuffed_data_frame[stuffed_data_index];
-    new_bcc2 = calculateBCC2(data_buffer, *data_length);
-
-    if (bcc2 != new_bcc2) {
-        return -2;
-    }
     
-    return (currentState == INFO_STOP) ? 1 : -1;
+    return 0;
 }
 
 int send_frame(LinkLayerRole role, const unsigned char *frame, int frame_size) {
 
     if (writeBytesSerialPort(frame, frame_size) == -1) {
-        perror("Error writing frame to serial port");
+        perror("Error writing frame to serial port\n");
         return -1;
     }
 
@@ -292,7 +318,7 @@ int send_frame(LinkLayerRole role, const unsigned char *frame, int frame_size) {
 ////////////////////////////////////////////////
 int llopen(LinkLayer connectionParameters) {
     ROLE = connectionParameters.role;
-    int fd = openSerialPort(connectionParameters.serialPort, connectionParameters.baudRate);
+    fd = openSerialPort(connectionParameters.serialPort, connectionParameters.baudRate);
     if (fd < 0) {
         printf("Error opening serial port\n");
         return -1;
@@ -309,7 +335,7 @@ int llopen(LinkLayer connectionParameters) {
             FLAG,
         };
         if(send_frame(LlTx, set_frame, 5) != 0) {
-            printf("Error sending SET frame");
+            printf("Error sending SET frame\n");
             return -1;
         }
         printf("SET Frame sent\n");
@@ -318,6 +344,7 @@ int llopen(LinkLayer connectionParameters) {
             printf("Error reading UA frame\n");
             return -1;
         }
+
 
         printf("UA frame read\n");
 
@@ -338,7 +365,7 @@ int llopen(LinkLayer connectionParameters) {
             FLAG,
         };
         if(send_frame(LlRx, ua_frame, 5) != 0) {
-            printf("Error sending UA frame");
+            printf("Error sending UA frame\n");
             return -1;
         }
         printf("UA Frame sent\n");
@@ -403,7 +430,7 @@ int llwrite(const unsigned char *buf, int bufSize) {
     free(frame);
 
     frame[0] = FLAG;
-    frame[1] = address;
+    frame[1] = address; 
     frame[2] = control;
     frame[3] = bcc1;
 
@@ -413,7 +440,6 @@ int llwrite(const unsigned char *buf, int bufSize) {
     memcpy(&frame[4], stuffedFrame, stuffedFrameSize);
 
     frame[4 + stuffedFrameSize] = calculateBCC2(buf, bufSize);
-    printf("[llwrite] BCC2 SENT: %02x\n", frame[4 + stuffedFrameSize]);
     frame[5 + stuffedFrameSize] = FLAG;
 
     if (!stuffedFrame) {
@@ -422,7 +448,7 @@ int llwrite(const unsigned char *buf, int bufSize) {
     }
 
     if (signal(SIGALRM, alarmHandler) == SIG_ERR) {
-        perror("Unable to catch SIGALRM");
+        perror("Unable to catch SIGALRM\n");
         return -1;
     }
     
@@ -451,7 +477,7 @@ int llwrite(const unsigned char *buf, int bufSize) {
         // Wait for acknowledgment
         int result = check_setup_frame(LlTx, res);
         if (result == 0) {  // ACK received
-            printf("Frame acknowledged.\n");
+            printf("%s answer received.\n", res == RR_0 ? "RR0" : "RR1");
             alarm(0);
             control ^= C_1;
             return bufSize;
@@ -487,13 +513,11 @@ int llread(unsigned char *packet) {
 
     int result = check_information_frame(LlRx, data_buffer, &data_length);
 
+
     if (result == 1) {  // Successfully received a valid information frame
-        printf("Information frame received successfully.\n");
 
         // Copy the data from data_buffer to the packet
         memcpy(packet, data_buffer, data_length);
-
-        printf("control global variable - %02x\n", control);
 
         // Send RR (Receiver Ready) frame to acknowledge reception
         unsigned char rr_frame[5];
@@ -511,7 +535,6 @@ int llread(unsigned char *packet) {
             printf("Error sending RR frame.\n");
             return -1;
         }
-        printf("RR frame sent successfully.\n");
 
         control ^= 0x80;
 
@@ -536,13 +559,10 @@ int llread(unsigned char *packet) {
             return -1;
         }
 
-        printf("REJ frame sent successfully.\n");
         return -1;
     } else if (result == 0) {
-        printf("End of transmission frame received.\n");
         return 0;
     } else if (result == -1) {
-        printf("Error in the frame header.\n");
         return -1;
     }
 
@@ -557,15 +577,15 @@ int llread(unsigned char *packet) {
 int llclose(int showStatistics) {
     // Configura o manipulador de alarme para retransmissões
     if (signal(SIGALRM, alarmHandler) == SIG_ERR) {
-        perror("Unable to catch SIGALRM");
+        perror("Unable to catch SIGALRM\n");
         return -1;
     }
 
     int attempts = 0;
     while (attempts < 3) {
         if (ROLE == LlTx) {
-            // Transmissor envia DISC e aguarda DISC de resposta
-            const unsigned char disc_frame[5] = {
+
+            unsigned char disc_frame[5] = {
                 FLAG,
                 A_SENDER,
                 DISC,
@@ -573,7 +593,7 @@ int llclose(int showStatistics) {
                 FLAG
             };
 
-            const unsigned char ua_frame[5] = {
+            unsigned char ua_frame[5] = {
                 FLAG,
                 A_SENDER,
                 C_UA,
@@ -581,30 +601,34 @@ int llclose(int showStatistics) {
                 FLAG
             };
 
-            printf("Attempt #%d: Transmitter sending DISC frame...\n", attempts + 1);
             if (send_frame(LlTx, disc_frame, sizeof(disc_frame)) != 0) {
                 printf("Error sending DISC frame.\n");
                 return -1;
             }
 
+            printf("DISC frame sent.\n");
+
             alarm(3);  // Define o timeout para resposta DISC
             alarmEnabled = TRUE;
 
             // Espera pelo DISC do receptor
-            if (check_setup_frame(LlTx, DISC) == 0) {  // DISC recebido do receptor
-                printf("Transmitter received DISC, sending UA frame to confirm.\n");
+            if (check_setup_frame(LlTx, DISC) == 0) {
+                  // DISC recebido do receptor
+                printf("DISC frame received\n");
 
                 // Envia UA para confirmar o fechamento
                 if (send_frame(LlTx, ua_frame, sizeof(ua_frame)) != 0) {
                     printf("Error sending UA frame.\n");
                     return -1;
                 }
+                printf("UA frame sent.\n");
+
                 alarm(0); // Cancela o alarme após envio do UA
                 closeSerialPort();
 
                 // Exibe estatísticas, se necessário
                 if (showStatistics == TRUE) {
-                    printf("Transmission statistics:\n");
+                    printf("\nTransmission statistics:\n");
                     printf("Total frames sent: %d\n", totalFramesSent);
                     printf("Total retransmissions: %d\n", totalRetransmissions);
                     printf("Total timeouts: %d\n", totalTimeouts);
@@ -615,49 +639,52 @@ int llclose(int showStatistics) {
             }
 
         } else {  // LlRx: Receptor
-            // Receptor espera DISC do transmissor
-            if (check_setup_frame(LlRx, DISC) == 0) {  // DISC recebido do transmissor
-                printf("Receiver received DISC, sending DISC in response.\n");
 
-                const unsigned char disc_frame[5] = {
-                    FLAG,
-                    A_RECEIVER,
-                    DISC,
-                    A_SENDER ^ DISC,
-                    FLAG
-                };
-
-                // Envia DISC em resposta
-                if (send_frame(LlRx, disc_frame, sizeof(disc_frame)) != 0) {
-                    printf("Error sending DISC frame.\n");
-                    return -1;
-                }
-
-                // Espera pelo UA do transmissor para encerrar a conexão
-                if (check_setup_frame(LlRx, C_UA) == 0) {
-                    alarm(0); // Cancela o alarme após receber o UA
-                    closeSerialPort();
-
-                    // Exibe estatísticas, se necessário
-                    if (showStatistics == TRUE) {
-                        printf("Reception statistics:\n");
-                        printf("Total frames sent: %d\n", totalFramesSent);
-                        printf("Total retransmissions: %d\n", totalRetransmissions);
-                        printf("Total timeouts: %d\n", totalTimeouts);
-                    }
-                    return 0;
-                } else {
-                    printf("Error receiving UA frame, retrying...\n");
-                }
-            } else {
-                printf("Timeout or error receiving DISC, retrying DISC frame...\n");
+            unsigned char disc_frame[5] = {
+                FLAG,
+                A_RECEIVER,
+                DISC,
+                A_RECEIVER ^ DISC,
+                FLAG
+            };
+            
+            // Envia DISC em resposta
+            if (send_frame(LlRx, disc_frame, sizeof(disc_frame)) != 0) {
+                printf("Error sending DISC frame.\n");
+                return -1;
             }
+            printf("DISC frame sent.\n");
+
+            alarm(3);
+            alarmEnabled = TRUE;
+
+            if (check_setup_frame(LlRx, C_UA) == 0) {
+
+                printf("UA frame received\n");
+
+                alarm(0); // Cancela o alarme após receber o UA
+                closeSerialPort();
+
+                // // Exibe estatísticas, se necessário
+                // if (showStatistics == TRUE) {
+                //     printf("Reception statistics:\n");
+                //     printf("Total frames sent: %d\n", totalFramesSent);
+                //     printf("Total retransmissions: %d\n", totalRetransmissions);
+                //     printf("Total timeouts: %d\n", totalTimeouts);
+                // }
+                return 0;
+            } else {
+                printf("Error receiving UA frame, retrying...\n");
+            }
+
         }
+        
         pause();
 
         if (!alarmEnabled) {
             attempts++;
             printf("Retrying DISC transmission...\n");
+            printf("Attempt: %d\n", attempts);
         }
     }
     printf("Failed to close connection after 3 attempts.\n");
