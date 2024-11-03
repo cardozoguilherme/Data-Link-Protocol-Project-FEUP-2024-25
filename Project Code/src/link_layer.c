@@ -91,7 +91,6 @@ int destuffBytes(const unsigned char* input, int inputSize, unsigned char* outpu
             } else if(input[i] == 0x5D) {
                 output[outputSize++] = 0x7D; // Replace with 0x7d
             } else {
-                printf("Error: Invalid escape sequence 0x7d 0x%02x.\n", input[i]);
                 return -1; // Indicate error
             }
         } else {
@@ -126,7 +125,6 @@ int check_setup_frame(LinkLayerRole role, unsigned char control_expected) {
 
     while (stop_flag == FALSE) {
         if(role == LlTx && !alarmEnabled) {
-            printf("BOB\n");
             stop_flag = TRUE;
             break;
         }
@@ -193,12 +191,10 @@ int check_setup_frame(LinkLayerRole role, unsigned char control_expected) {
     }
 
     if (currentState != SETUP_STOP) {
-        printf("Error in control frame: Unexpected end of frame1\n");
         while (buffer_empty == FALSE) {
             int bytes = readByteSerialPort(&byte);
             if (bytes <= 0) buffer_empty = TRUE;
         }
-        printf("Error in control frame: Unexpected end of frame2\n");
         return -1;
     }
     return 0;
@@ -287,7 +283,6 @@ int check_information_frame(LinkLayerRole role, unsigned char *data_buffer, int 
         *data_length = destuffBytes(stuffed_data_frame, stuffed_data_index, data_buffer);
 
         if (*data_length == -1) {
-            printf("Error in information frame: DATA (BCC2)\n\n");
             return -2;
         }
 
@@ -296,7 +291,6 @@ int check_information_frame(LinkLayerRole role, unsigned char *data_buffer, int 
 
         if (bcc2 != new_bcc2) {
             return -2;
-            printf("Error in information frame: DATA (BCC2)\n");
         }
         return 1;
     }
@@ -504,9 +498,7 @@ int llwrite(const unsigned char *buf, int bufSize) {
         }
 
         // Wait for acknowledgment
-        printf("before the check_setup_frame\n");
         int result = check_setup_frame(LlTx, res);
-        printf("after the check_setup_frame\n");
 
         if (result == 0) {  // ACK received
             printf("%s answer received.\n", res == RR_0 ? "RR0" : "RR1");
@@ -525,8 +517,6 @@ int llwrite(const unsigned char *buf, int bufSize) {
     }
 
     printf("Failed to restore connection after %d attempts.\n", MAX_RETRIES);
-
-    closeSerialPort();
 
     return -1;
 }
@@ -608,8 +598,9 @@ int llclose(int showStatistics) {
         return -1;
     }
 
-    int attempts = 0;
-    while (attempts < 3) {
+    alarmCount = 0;
+    alarmEnabled = FALSE;
+    while (alarmCount < MAX_RETRIES) {
         if (ROLE == LlTx) {
 
             unsigned char disc_frame[5] = {
@@ -635,7 +626,7 @@ int llclose(int showStatistics) {
 
             printf("DISC frame sent.\n");
 
-            alarm(3);  // Define o timeout para resposta DISC
+            alarm(TIMEOUT);  // Define o timeout para resposta DISC
             alarmEnabled = TRUE;
 
             // Espera pelo DISC do receptor
@@ -682,7 +673,7 @@ int llclose(int showStatistics) {
             }
             printf("DISC frame sent.\n");
 
-            alarm(3);
+            alarm(TIMEOUT);
             alarmEnabled = TRUE;
 
             if (check_setup_frame(LlRx, C_UA) == 0) {
@@ -691,28 +682,14 @@ int llclose(int showStatistics) {
 
                 alarm(0); // Cancela o alarme após receber o UA
                 closeSerialPort();
-
-                // // Exibe estatísticas, se necessário
-                // if (showStatistics == TRUE) {
-                //     printf("Reception statistics:\n");
-                //     printf("Total frames sent: %d\n", totalFramesSent);
-                //     printf("Total retransmissions: %d\n", totalRetransmissions);
-                //     printf("Total timeouts: %d\n", totalTimeouts);
-                // }
                 return 0;
             } else {
                 printf("Error receiving UA frame, retrying...\n");
             }
-
+            alarm(0);
+            closeSerialPort();
         }
         
-        //pause();
-
-        if (!alarmEnabled) {
-            attempts++;
-            printf("Retrying DISC transmission...\n");
-            printf("Attempt: %d\n", attempts);
-        }
     }
     printf("Failed to close connection after 3 attempts.\n");
     return -1;
