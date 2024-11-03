@@ -35,7 +35,7 @@
 int totalFramesSent = 0;       // Total frames sent
 int totalRetransmissions = 0;  // Total retransmissions
 int totalTimeouts = 0;         // Total timeouts
-int fd;
+//int fd;
 
 static unsigned char control = C_0;
 static int TIMEOUT;
@@ -130,7 +130,7 @@ int check_setup_frame(LinkLayerRole role, unsigned char control_expected) {
             stop_flag = TRUE;
             break;
         }
-        printf("check_setup loop\n");
+        //printf("check_setup loop\n");
 
         int bytes = readByteSerialPort(&byte);
         if (bytes > 0) { 
@@ -327,10 +327,11 @@ int send_frame(LinkLayerRole role, const unsigned char *frame, int frame_size) {
 // LLOPEN
 ////////////////////////////////////////////////
 int llopen(LinkLayer connectionParameters) {
+    ROLE = connectionParameters.role;
     MAX_RETRIES = connectionParameters.nRetransmissions;
     TIMEOUT = connectionParameters.timeout;
     
-    fd = openSerialPort(connectionParameters.serialPort, connectionParameters.baudRate);
+    int fd = openSerialPort(connectionParameters.serialPort, connectionParameters.baudRate);
     if (fd < 0) {
         printf("Error opening serial port\n");
         return -1;
@@ -523,7 +524,10 @@ int llwrite(const unsigned char *buf, int bufSize) {
         }
     }
 
-    printf("Failed to close connection after %d attempts.\n", MAX_RETRIES);
+    printf("Failed to restore connection after %d attempts.\n", MAX_RETRIES);
+
+    closeSerialPort();
+
     return -1;
 }
 
@@ -604,110 +608,112 @@ int llclose(int showStatistics) {
         return -1;
     }
 
-    int alarmCount = 0;
-    alarmEnabled = FALSE;
-    while (alarmCount < MAX_RETRIES) {
+    int attempts = 0;
+    while (attempts < 3) {
         if (ROLE == LlTx) {
-            if (!alarmEnabled) {
-                alarm(TIMEOUT);
-                alarmEnabled = TRUE;
 
-                unsigned char disc_frame[5] = {
-                    FLAG,
-                    A_SENDER,
-                    DISC,
-                    A_SENDER ^ DISC,
-                    FLAG
-                };
+            unsigned char disc_frame[5] = {
+                FLAG,
+                A_SENDER,
+                DISC,
+                A_SENDER ^ DISC,
+                FLAG
+            };
 
-                if (send_frame(LlTx, disc_frame, sizeof(disc_frame)) != 0) {
-                    printf("Error sending DISC frame.\n");
-                    return -1;
-                }
+            unsigned char ua_frame[5] = {
+                FLAG,
+                A_SENDER,
+                C_UA,
+                A_SENDER ^ C_UA,
+                FLAG
+            };
 
-                printf("DISC frame sent.\n");
+            if (send_frame(LlTx, disc_frame, sizeof(disc_frame)) != 0) {
+                printf("Error sending DISC frame.\n");
+                return -1;
             }
+
+            printf("DISC frame sent.\n");
+
+            alarm(3);  // Define o timeout para resposta DISC
+            alarmEnabled = TRUE;
+
             // Espera pelo DISC do receptor
             if (check_setup_frame(LlTx, DISC) == 0) {
-                alarm(0);
-                alarmEnabled = FALSE;
+                  // DISC recebido do receptor
+                printf("DISC frame received\n");
 
-                if (!alarmEnabled) {
-                    alarm(TIMEOUT);
-                    alarmEnabled = TRUE;
-
-                    unsigned char ua_frame[5] = {
-                        FLAG,
-                        A_SENDER,
-                        C_UA,
-                        A_SENDER ^ C_UA,
-                        FLAG
-                    };
-
-                    // Envia UA para confirmar o fechamento
-                    if (send_frame(LlTx, ua_frame, sizeof(ua_frame)) != 0) {
-                        printf("Error sending UA frame.\n");
-                    }
-                    printf("UA frame sent.\n");
-
-                    alarm(0); // Cancela o alarme após envio do UA
-                    closeSerialPort();
-
-                    // Exibe estatísticas, se necessário
-                    if (showStatistics == TRUE) {
-                        printf("\nTransmission statistics:\n");
-                        printf("Total frames sent: %d\n", totalFramesSent);
-                        printf("Total retransmissions: %d\n", totalRetransmissions);
-                        printf("Total timeouts: %d\n", totalTimeouts);
-                    }
-                    return 0;
-                } else {
-                    printf("Timeout or error receiving DISC, retrying DISC frame...\n");
-                    alarmEnabled = FALSE;
+                // Envia UA para confirmar o fechamento
+                if (send_frame(LlTx, ua_frame, sizeof(ua_frame)) != 0) {
+                    printf("Error sending UA frame.\n");
+                    return -1;
                 }
-            } else {  // LlRx: Receptor
-                if (!alarmEnabled) {
-                    alarm(TIMEOUT);
-                    alarmEnabled = TRUE;
+                printf("UA frame sent.\n");
 
-                    unsigned char disc_frame[5] = {
-                        FLAG,
-                        A_RECEIVER,
-                        DISC,
-                        A_RECEIVER ^ DISC,
-                        FLAG
-                    };
-                    
-                    // Envia DISC em resposta
-                    if (send_frame(LlRx, disc_frame, sizeof(disc_frame)) != 0) {
-                        printf("Error sending DISC frame.\n");
-                        return -1;
-                    }
-                    printf("DISC frame sent.\n");
+                alarm(0); // Cancela o alarme após envio do UA
+                closeSerialPort();
+
+                // Exibe estatísticas, se necessário
+                if (showStatistics == TRUE) {
+                    printf("\nTransmission statistics:\n");
+                    printf("Total frames sent: %d\n", totalFramesSent);
+                    printf("Total retransmissions: %d\n", totalRetransmissions);
+                    printf("Total timeouts: %d\n", totalTimeouts);
                 }
-
-                if (check_setup_frame(LlRx, C_UA) == 0) {
-                    printf("UA frame received\n");
-
-                    alarm(0); // Cancela o alarme após receber o UA
-                    closeSerialPort();
-
-                    // // Exibe estatísticas, se necessário
-                    // if (showStatistics == TRUE) {
-                    //     printf("Reception statistics:\n");
-                    //     printf("Total frames sent: %d\n", totalFramesSent);
-                    //     printf("Total retransmissions: %d\n", totalRetransmissions);
-                    //     printf("Total timeouts: %d\n", totalTimeouts);
-                    // }
-                    return 0;
-                } else {
-                    printf("Error receiving UA frame, retrying...\n");
-                    alarmEnabled = FALSE;
-                }
+                return 0;
+            } else {
+                printf("Timeout or error receiving DISC, retrying DISC frame...\n");
             }
+
+        } else {  // LlRx: Receptor
+
+            unsigned char disc_frame[5] = {
+                FLAG,
+                A_RECEIVER,
+                DISC,
+                A_RECEIVER ^ DISC,
+                FLAG
+            };
+            
+            // Envia DISC em resposta
+            if (send_frame(LlRx, disc_frame, sizeof(disc_frame)) != 0) {
+                printf("Error sending DISC frame.\n");
+                return -1;
+            }
+            printf("DISC frame sent.\n");
+
+            alarm(3);
+            alarmEnabled = TRUE;
+
+            if (check_setup_frame(LlRx, C_UA) == 0) {
+
+                printf("UA frame received\n");
+
+                alarm(0); // Cancela o alarme após receber o UA
+                closeSerialPort();
+
+                // // Exibe estatísticas, se necessário
+                // if (showStatistics == TRUE) {
+                //     printf("Reception statistics:\n");
+                //     printf("Total frames sent: %d\n", totalFramesSent);
+                //     printf("Total retransmissions: %d\n", totalRetransmissions);
+                //     printf("Total timeouts: %d\n", totalTimeouts);
+                // }
+                return 0;
+            } else {
+                printf("Error receiving UA frame, retrying...\n");
+            }
+
+        }
+        
+        //pause();
+
+        if (!alarmEnabled) {
+            attempts++;
             printf("Retrying DISC transmission...\n");
+            printf("Attempt: %d\n", attempts);
         }
     }
-    printf("Failed to close connection after %d attempts.\n", MAX_RETRIES);
+    printf("Failed to close connection after 3 attempts.\n");
     return -1;
 }
